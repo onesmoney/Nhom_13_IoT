@@ -5,13 +5,13 @@
 #include <HardwareSerial.h>
 
 // Doc bui min PMS7003 qua UART 9600 8N1; cam bien tu gui frame 32 byte.
-// Cap nguon 5V (khong dung 3.3V), GND chung; TX cam bien -> RX16, RX -> TX17.
+// Cap nguon 5V (khong dung 3.3V), GND chung; TX cam bien -> RX17, RX -> TX16.
 // Duong RX cua cam bien la tuy chon vi chuong trinh chi nhan, khong gui lenh.
 // Kiem tra header 0x42 0x4D, do dai va checksum truoc khi cap nhat so do.
 class Pms7003Sensor {
 public:
   // staleMs: thoi gian khong nhan frame hop le de coi du lieu la cu.
-  Pms7003Sensor(HardwareSerial &serial, int rxPin = 16, int txPin = 17,
+  Pms7003Sensor(HardwareSerial &serial, int rxPin = 17, int txPin = 16,
                 unsigned long staleMs = 10000);
 
   void begin();

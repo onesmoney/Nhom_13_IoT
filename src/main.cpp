@@ -23,9 +23,9 @@ DhtSensor dhtSensor(DHT_PIN);
 // Cam bien BH1750 I2C 5 chan: SDA=GPIO21, SCL=GPIO22, ADDR de ho/noi GND -> 0x23
 Bh1750Sensor bh1750(0x23, 21, 22, 1000);
 
-// Cam bien bui PMS7003 qua UART2: PMS TX -> GPIO16, PMS RX -> GPIO17 (tuy
+// Cam bien bui PMS7003 qua UART2: PMS TX -> GPIO17, PMS RX -> GPIO16 (tuy
 // chon), VCC -> 5V/VIN, GND chung. Khong dung chung chan voi BH1750/OLED.
-Pms7003Sensor pms7003(Serial2, 16, 17);
+Pms7003Sensor pms7003(Serial2, 17, 16);
 
 // Man hinh OLED I2C 1.3 inch (128x64, SH1106, dia chi 0x3C), chung bus I2C
 // voi BH1750: SDA=GPIO21, SCL=GPIO22
@@ -195,7 +195,7 @@ void setup() {
                 allowSmartConfig ? "DUOC BAT" : "BI BO QUA");
 
   dhtSensor.begin();
-  pms7003.begin();     // UART2 9600 baud, RX=GPIO16, TX=GPIO17
+  pms7003.begin();     // UART2 9600 baud, RX=GPIO17, TX=GPIO16
   bh1750.begin();      // mo Wire(21,22) mot lan cho chung bus I2C
   oled.begin();        // dung lai bus do, dia chi 0x3C
   clockTime.begin();   // dong bo NTP, se lay gio khi WiFi ket noi
