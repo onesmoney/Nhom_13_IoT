@@ -3,4 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-/test
+/test/*
+!/test/wifi/
+/test/wifi/__pycache__/
+/.zcode
