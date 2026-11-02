@@ -7,3 +7,5 @@
 !/test/wifi/
 /test/wifi/__pycache__/
 /.zcode
+/.env
+/.venv
