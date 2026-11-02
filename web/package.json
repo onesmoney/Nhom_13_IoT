@@ -1,0 +1,20 @@
+{
+  "name": "nhom13-iot-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Dashboard bieu do du lieu cam bien ESP32 tu Firebase Realtime Database",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w client",
+    "test": "node --test test/*.test.mjs",
+    "downsample": "node server/scripts/downsample-history.mjs",
+    "start": "npm start -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
+}

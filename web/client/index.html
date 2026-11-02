@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="vi" class="bg-page-bg font-sans leading-[1.4] text-text dark:[--color-page-bg:#0f172a] dark:[--color-surface:#1e293b] dark:[--color-text:#f1f5f9] dark:[--color-text-muted:#b6c2d2] dark:[--color-line:#3c4c63] dark:[--color-input-line:#64748b] dark:[--color-success:#86efac] dark:[--color-warning:#fcd34d] dark:[--color-danger:#fca5a5] dark:[--color-error-bg:#3f202c] dark:[--color-error-line:#9f4b5e] dark:[--color-error-text:#fecaca] dark:[--color-info-bg:#172f50] dark:[--color-info-line:#476eab] dark:[--color-info-text:#bfdbfe] dark:[--color-focus:#93c5fd] dark:[--color-chart-grid:#475569] dark:[--color-chart-red:#f87171] dark:[--color-chart-blue:#60a5fa] dark:[--color-chart-amber:#fbbf24] dark:[--color-chart-green:#4ade80] dark:[--color-chart-purple:#c084fc] dark:[--color-chart-slate:#cbd5e1] dark:[--color-chart-orange:#fb923c] dark:[--color-chart-sky:#38bdf8] dark:[--color-background:#1e293b] dark:[--color-foreground:#f1f5f9] dark:[--color-card:#1e293b] dark:[--color-card-foreground:#f1f5f9] dark:[--color-popover:#1e293b] dark:[--color-popover-foreground:#f1f5f9] dark:[--color-secondary:#1e3a5f] dark:[--color-secondary-foreground:#bfdbfe] dark:[--color-muted:#334155] dark:[--color-muted-foreground:#b6c2d2] dark:[--color-accent:#334155] dark:[--color-accent-foreground:#dbeafe] dark:[--color-border:#64748b] dark:[--color-input:#64748b] dark:[--color-ring:#93c5fd]">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nhóm 13 IoT - Dashboard</title>
+    <script>
+      // Set the theme before the page/CSS paints; storage may be blocked.
+      (() => {
+        let theme;
+        try { theme = localStorage.getItem('nhom13.theme'); } catch {}
+        if (theme !== 'light' && theme !== 'dark') {
+          theme = window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.classList.toggle('dark', theme === 'dark');
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
+  </head>
+  <body class="m-0 bg-page-bg font-sans leading-[1.4] text-text">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
