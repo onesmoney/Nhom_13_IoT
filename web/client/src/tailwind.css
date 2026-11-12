@@ -1,5 +1,7 @@
-@import "@cloudflare/kumo/styles/tailwind";
+/* Tailwind must establish its cascade layers before Kumo registers theme tokens.
+   Otherwise the unlayered light tokens override dark-mode utilities. */
 @import "tailwindcss";
+@import "@cloudflare/kumo/styles/tailwind";
 @source "../../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
 
 @custom-variant dark (&:where(.dark, .dark *));
