@@ -1,67 +1,124 @@
 import { useEffect, useId, useState } from 'react';
-import { Popover } from '@base-ui/react/popover';
-import { CalendarDays, ChevronDown } from 'lucide-react';
-import { Button } from '../../../components/ui/button';
+import { Popover, Button } from '@cloudflare/kumo';
+import { CalendarDotsIcon, CaretDownIcon } from '@phosphor-icons/react';
 import { DashboardDateSelector } from './DashboardDateSelector';
 import { MAX_SELECTED_DAYS, shortDate, todayVN } from '../../../../../shared/time.mjs';
 import { useAvailability } from '../hooks/useAvailability.js';
+import { fromCalendarDate, toCalendarDate } from '../lib/calendarDate.mjs';
+import { datesInRange, historicalPresets, isContinuous, periodLabel, RECENT_RANGES, validatedDraft } from '../lib/datePresets.mjs';
 
-const RECENT_RANGES = { '15m': '15 phút', '1h': '1 giờ', '6h': '6 giờ', '24h': '24 giờ' };
-
-export function periodLabel(value) {
-  if (value.mode === 'recent') return `${RECENT_RANGES[value.range]} gần đây`;
-  if (!value.dates.length) return 'Chọn ngày';
-  return value.dates.length === 1 ? shortDate(value.dates[0]) : `${value.dates.length} ngày đã chọn`;
-}
+export { periodLabel } from '../lib/datePresets.mjs';
 
 function CalendarSelection({ value, device, extent, onApply, onCancel }) {
   const [dates, setDates] = useState(value.dates ?? []);
   const [mode, setMode] = useState(value.mode);
-  const [range, setRange] = useState(value.range ?? '1h');
-  const [month, setMonth] = useState(() => (value.dates?.at(-1) || extent?.last || todayVN()).slice(0, 7));
-  const availability = useAvailability(device, month, dates);
+  const [recentRange, setRecentRange] = useState(value.range ?? '1h');
+  const [selection, setSelection] = useState(value.dates?.length && !isContinuous(value.dates) ? 'multiple' : 'range');
+  const [dateRange, setDateRange] = useState(() => value.dates?.length && isContinuous(value.dates)
+    ? { from: toCalendarDate(value.dates[0]), to: toCalendarDate(value.dates.at(-1)) } : undefined);
+  const [month, setMonth] = useState(() => (value.dates?.[0] || extent?.last || todayVN()).slice(0, 7));
+  const [wide, setWide] = useState(() => window.matchMedia('(min-width: 960px)').matches);
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 960px)');
+    const update = () => setWide(query.matches);
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  const availability = useAvailability(device, month, mode === 'dates' ? dates : []);
   const data = availability.data;
   const calendar = availability.calendar;
   const bounds = calendar || extent;
+  const today = todayVN();
+  const { dates: validDates, skipped } = validatedDraft(dates, data);
+  const [message, setMessage] = useState('');
+  const complete = selection === 'multiple' || !!dateRange?.to;
+  const canApply = mode === 'recent' || (complete && !message && validDates.length > 0 && !availability.loading && !availability.error);
   useEffect(() => {
     if (!bounds?.first) return;
     if (month < bounds.first.slice(0, 7)) setMonth(bounds.first.slice(0, 7));
     else if (month > bounds.last.slice(0, 7)) setMonth(bounds.last.slice(0, 7));
   }, [bounds, month]);
-  const valid = dates.length > 0 && dates.length <= MAX_SELECTED_DAYS && data?.validDates.length === dates.length;
-  const [limitMessage, setLimitMessage] = useState('');
+
+  function selectRange(next) {
+    setMode('dates');
+    setDateRange(next);
+    setMessage('');
+    try {
+      setDates(next?.from && next?.to ? datesInRange(fromCalendarDate(next.from), fromCalendarDate(next.to), today) : []);
+    } catch (err) { setDates([]); setMessage(err.message); }
+  }
+
+  function selectPreset(preset) {
+    setMode('dates');
+    setSelection('range');
+    setDates(preset.dates);
+    setDateRange({ from: toCalendarDate(preset.from), to: toCalendarDate(preset.to) });
+    setMonth(preset.from.slice(0, 7));
+    setMessage('');
+  }
+
+  function switchSelection(next) {
+    setSelection(next);
+    setMessage('');
+    if (next === 'range') {
+      const continuous = isContinuous(dates);
+      setDateRange(continuous ? { from: toCalendarDate(dates[0]), to: toCalendarDate(dates.at(-1)) } : undefined);
+      if (!continuous) setDates([]);
+    }
+  }
+
   return <>
-    <div className="grid grid-cols-2 gap-2" role="group" aria-label="Khoảng giờ gần đây">
-      {Object.entries(RECENT_RANGES).map(([key, label]) => <Button key={key}
-        variant={mode === 'recent' && range === key ? 'default' : 'outline'}
-        aria-pressed={mode === 'recent' && range === key}
-        onClick={() => { setMode('recent'); setRange(key); setDates([]); }}>{label} gần đây</Button>)}
+    <div className="flex flex-col min-[600px]:flex-row">
+      <div className="flex shrink-0 flex-col gap-1 border-b border-kumo-line p-3 min-[600px]:w-48 min-[600px]:border-r min-[600px]:border-b-0" aria-label="Khoảng thời gian có sẵn">
+        <span className="px-2 py-1 text-xs font-medium text-kumo-subtle">Thời gian thực</span>
+        <div className="grid grid-cols-2 gap-1 min-[600px]:grid-cols-1">
+          {Object.entries(RECENT_RANGES).map(([key, label]) => <button key={key} type="button"
+            aria-pressed={mode === 'recent' && recentRange === key}
+            onClick={() => { setMode('recent'); setRecentRange(key); setMessage(''); }}
+            className={`time-preset ${mode === 'recent' && recentRange === key ? 'bg-kumo-contrast text-kumo-inverse' : 'text-kumo-default hover:bg-kumo-tint'}`}>{label} gần đây</button>)}
+        </div>
+        <span className="px-2 pt-3 pb-1 text-xs font-medium text-kumo-subtle">Theo ngày · UTC+7</span>
+        <div className="grid grid-cols-2 gap-1 min-[600px]:grid-cols-1">
+          {historicalPresets(today).map((preset) => <button key={preset.label} type="button"
+            aria-pressed={mode === 'dates' && dates.join(',') === preset.dates.join(',')}
+            onClick={() => selectPreset(preset)}
+            className={`time-preset ${mode === 'dates' && dates.join(',') === preset.dates.join(',') ? 'bg-kumo-contrast text-kumo-inverse' : 'text-kumo-default hover:bg-kumo-tint'}`}>{preset.label}</button>)}
+        </div>
+      </div>
+      <div className="min-w-0 flex-1 p-3">
+        <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Cách chọn ngày">
+          <Button variant={selection === 'range' ? 'primary' : 'outline'} aria-pressed={selection === 'range'} onClick={() => switchSelection('range')}>Khoảng ngày</Button>
+          <Button variant={selection === 'multiple' ? 'primary' : 'outline'} aria-pressed={selection === 'multiple'} onClick={() => switchSelection('multiple')}>Từng ngày</Button>
+        </div>
+        <p className="mb-3 text-sm text-kumo-subtle">{selection === 'range' ? 'Chọn ngày bắt đầu và ngày kết thúc.' : 'Chọn các ngày có dữ liệu, không cần liền nhau.'}</p>
+        {bounds?.first ? <DashboardDateSelector dates={mode === 'dates' ? dates : []} range={mode === 'dates' ? dateRange : undefined}
+          selection={selection} month={month} first={bounds.first} last={bounds.last}
+          available={calendar?.days || []} loading={!calendar} numberOfMonths={wide && selection === 'range' ? 2 : 1}
+          today={today} onMonthChange={setMonth} onRangeChange={selectRange} onSelect={(next) => {
+            if (next.length > MAX_SELECTED_DAYS) { setMessage(`Tối đa ${MAX_SELECTED_DAYS} ngày mỗi lần.`); return; }
+            setMessage(''); setMode('dates'); setDates(next);
+          }} /> : <p className="py-8 text-sm text-kumo-subtle">{availability.loading ? 'Đang tải lịch…' : 'Chưa có ngày để hiển thị.'}</p>}
+        <div className="mt-3 text-sm text-kumo-subtle" aria-live="polite">
+          {!device ? 'Chưa có thiết bị' : availability.loading ? 'Đang kiểm tra ngày có dữ liệu…'
+            : availability.error ? <span role="alert">{availability.error} <Button variant="ghost" onClick={availability.reload}>Thử lại</Button></span>
+            : !data?.first ? 'Thiết bị chưa có dữ liệu.' : mode === 'dates' ? `${validDates.length} ngày có dữ liệu trong ${dates.length} ngày đã chọn.` : 'Khoảng giờ gần đây tiếp tục cập nhật tự động.'}
+          {mode === 'dates' && !complete && <p>Chọn thêm ngày kết thúc để áp dụng.</p>}
+          {mode === 'dates' && skipped.length > 0 && <p>Sẽ bỏ qua {skipped.length} ngày không có dữ liệu: {skipped.map(shortDate).join(', ')}.</p>}
+          {message && <p role="alert" className="text-error-text">{message}</p>}
+        </div>
+        {mode === 'dates' && selection === 'multiple' && dates.length > 0 && <div className="mt-3 flex max-h-24 flex-wrap gap-1 overflow-auto" aria-label="Ngày đã chọn">
+          {dates.map((day) => <Button key={day} size="sm" variant="secondary" aria-label={`Bỏ ${shortDate(day)}`}
+            onClick={() => { setDates(dates.filter((d) => d !== day)); setMessage(''); }}>{shortDate(day)} ×</Button>)}
+        </div>}
+      </div>
     </div>
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-sm">Chọn từng ngày có dữ liệu</span>
-      <span className="text-xs text-muted-foreground">UTC+7</span>
-    </div>
-    {bounds?.first && <DashboardDateSelector dates={dates} month={month} first={bounds.first} last={bounds.last}
-      available={calendar?.days || []} loading={!calendar}
-      today={todayVN()} onMonthChange={setMonth} onSelect={(next) => {
-        if (next.length > MAX_SELECTED_DAYS) { setLimitMessage(`Tối đa ${MAX_SELECTED_DAYS} ngày mỗi lần.`); return; }
-        setLimitMessage(''); setMode('dates'); setDates(next);
-      }} />}
-    <div className="text-center text-sm text-muted-foreground" aria-live="polite">
-      {!device ? 'Chưa có thiết bị' : availability.loading ? 'Đang kiểm tra ngày có dữ liệu…'
-        : availability.error ? <span role="alert">{availability.error} <Button variant="ghost" onClick={availability.reload}>Thử lại</Button></span>
-        : !data?.first ? 'Thiết bị chưa có dữ liệu.' : !data.days.length ? 'Tháng này không có dữ liệu.' : `${dates.length} ngày đã chọn`}
-      {data && dates.some((day) => !data.validDates.includes(day)) && <div>Ngày không còn dữ liệu. <Button variant="ghost" onClick={() => setDates(data.validDates)}>Bỏ ngày không hợp lệ</Button></div>}
-      {limitMessage && <div role="alert">{limitMessage}</div>}
-    </div>
-    {dates.length > 0 && <div className="flex flex-wrap gap-1 max-h-24 overflow-auto" aria-label="Ngày đã chọn">
-      {dates.map((day) => <Button key={day} size="sm" variant="secondary" aria-label={`Bỏ ${shortDate(day)}`} onClick={() => setDates(dates.filter((d) => d !== day))}>{shortDate(day)} ×</Button>)}
-    </div>}
-    <div className="text-xs text-muted-foreground">Tối đa {MAX_SELECTED_DAYS} ngày/lần; truy vấn tối đa 100.000 bản ghi.</div>
-    <div className="flex justify-end gap-2 border-t border-border pt-3">
-      <Button variant="outline" onClick={onCancel}>Hủy</Button>
-      <Button disabled={mode === 'dates' && (!valid || availability.loading || !!availability.error)}
-        onClick={() => onApply(mode === 'recent' ? { mode: 'recent', range } : { mode: 'dates', dates })}>Áp dụng</Button>
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line p-3">
+      <span className="text-xs text-kumo-subtle">UTC+7 · Tối đa {MAX_SELECTED_DAYS} ngày / 100.000 bản ghi</span>
+      <div className="flex gap-2">
+        <Button variant="outline" onClick={onCancel}>Hủy</Button>
+        <Button variant="primary" disabled={!canApply} onClick={() => onApply(mode === 'recent'
+          ? { mode: 'recent', range: recentRange } : { mode: 'dates', dates: validDates })}>Áp dụng</Button>
+      </div>
     </div>
   </>;
 }
@@ -69,22 +126,18 @@ function CalendarSelection({ value, device, extent, onApply, onCancel }) {
 export default function TimePicker({ value, device, extent, onChange }) {
   const [open, setOpen] = useState(false);
   const titleId = useId();
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <div className="font-sans text-sm leading-[1.4] text-foreground">
-        <Popover.Trigger render={<Button variant="outline" className="[@media(max-width:600px)]:h-auto [@media(max-width:600px)]:min-h-9 [@media(max-width:600px)]:w-full [@media(max-width:600px)]:whitespace-normal" />}>
-          <CalendarDays aria-hidden="true" />{periodLabel(value)}<ChevronDown aria-hidden="true" />
-        </Popover.Trigger>
-      </div>
-      <Popover.Portal>
-        <Popover.Positioner sideOffset={8} align="end" collisionPadding={12} className="z-30 font-sans text-sm leading-[1.4] text-foreground">
-          <Popover.Popup className="flex max-h-[min(var(--available-height,100dvh),calc(100dvh_-_24px))] w-[min(340px,calc(100vw_-_24px),var(--available-width,100vw))] flex-col gap-3 overflow-y-auto overscroll-contain rounded-xl border border-border bg-background p-4 shadow-[0_8px_28px_rgb(15_23_42_/_0.15)] *:min-w-0 *:shrink-0" aria-labelledby={titleId}>
-            <Popover.Title id={titleId} className="text-sm font-semibold">Chọn thời gian</Popover.Title>
-            {open && <CalendarSelection key={device} value={value} device={device} extent={extent}
-              onCancel={() => setOpen(false)} onApply={(next) => { onChange(next); setOpen(false); }} />}
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
-    </Popover.Root>
-  );
+  return <Popover open={open} onOpenChange={setOpen}>
+    <Popover.Trigger render={<Button variant="outline" className="h-auto min-h-10 max-w-full whitespace-normal text-left" />}>
+      <CalendarDotsIcon aria-hidden="true" size={18} />{periodLabel(value)}<CaretDownIcon aria-hidden="true" size={16} />
+    </Popover.Trigger>
+    <Popover.Portal>
+      <Popover.Positioner sideOffset={8} align="end" collisionPadding={12} className="z-30">
+        <Popover.Popup aria-labelledby={titleId} className="sensor-time-picker max-h-[min(var(--available-height,100dvh),calc(100dvh_-_24px))] w-max max-w-[calc(100vw_-_24px)] overflow-y-auto overscroll-contain p-0">
+          <Popover.Title id={titleId} className="border-b border-kumo-line px-4 py-3 text-sm font-semibold">Chọn thời gian cảm biến</Popover.Title>
+          {open && <CalendarSelection key={device} value={value} device={device} extent={extent}
+            onCancel={() => setOpen(false)} onApply={(next) => { onChange(next); setOpen(false); }} />}
+        </Popover.Popup>
+      </Popover.Positioner>
+    </Popover.Portal>
+  </Popover>;
 }

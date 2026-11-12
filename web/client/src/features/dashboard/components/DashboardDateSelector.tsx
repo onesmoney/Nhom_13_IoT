@@ -1,45 +1,41 @@
-// Adapted from https://reui.io/r/base-nova/c-date-selector-1.json
-// MIT Copyright (c) 2025 Keenthemes Inc. See ../../../components/reui/REUI-LICENSE.txt.
-import { vi } from "date-fns/locale"
-import { DateSelector } from "@/components/reui/date-selector"
-import { Card, CardContent } from "@/components/ui/card"
-import { fromCalendarDate, toCalendarDate } from "../lib/calendarDate.mjs"
+import { DatePicker, type DateRange } from '@cloudflare/kumo';
+import { vi } from 'date-fns/locale';
+import { fromCalendarDate, toCalendarDate } from '../lib/calendarDate.mjs';
 
-const i18n = {
-  today: "Mới nhất",
-  months: Array.from({ length: 12 }, (_, i) => `Tháng ${i + 1}`),
-  weekdaysShort: ["CN", "T2", "T3", "T4", "T5", "T6", "T7"],
-}
-const periodTypes: ["day"] = ["day"]
+type Props = {
+  dates: string[]; range: DateRange | undefined; selection: 'range' | 'multiple';
+  month: string; first: string; last: string; available: string[];
+  loading: boolean; today: string; numberOfMonths: number;
+  onSelect: (dates: string[]) => void; onRangeChange: (range: DateRange | undefined) => void;
+  onMonthChange: (month: string) => void;
+};
 
-// Keep the registry's Card -> CardContent -> DateSelector composition.
-// Date objects carry calendar dates only; API boundaries remain UTC+7.
-export function DashboardDateSelector({ dates, month, first, last, available, loading, today, onSelect, onMonthChange }: {
-  dates: string[]; month: string; first: string; last: string; available: string[]
-  loading: boolean; today: string
-  onSelect: (dates: string[]) => void; onMonthChange: (month: string) => void
-}) {
-  return (
-    <Card className="p-0 ring-0 shadow-none">
-      <CardContent className="p-0">
-        <DateSelector
-          selectedDates={dates.map(toCalendarDate)}
-          onDatesChange={(days) => onSelect(days.map(fromCalendarDate).sort())}
-          month={toCalendarDate(`${month}-01`)}
-          onMonthChange={(day) => onMonthChange(fromCalendarDate(day).slice(0, 7))}
-          allowRange={false} presetMode="is" periodTypes={periodTypes}
-          showInput={false} showFilters={false} showPeriodTabs={false} showTwoMonths={false}
-          weekStartsOn={1} i18n={i18n} dayDateFormat="dd/MM/yyyy" className="w-full sm:w-full"
-          calendarProps={{
-            locale: vi,
-            labels: { labelDayButton: (day, modifiers) => `${day.toLocaleDateString('vi-VN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}${modifiers.today ? ', hôm nay' : ''}${modifiers.selected ? ', đã chọn' : ''}` },
-            today: toCalendarDate(today),
-            startMonth: toCalendarDate(`${first.slice(0, 7)}-01`),
-            endMonth: toCalendarDate(last),
-            disabled: (day) => loading || !available.includes(fromCalendarDate(day)),
-          }}
-        />
-      </CardContent>
-    </Card>
-  )
+// Dates carry calendar components only; API day boundaries remain UTC+7.
+export function DashboardDateSelector({ dates, range, selection, month, first, last, available, loading,
+  today, numberOfMonths, onSelect, onRangeChange, onMonthChange }: Props) {
+  const common = {
+    month: toCalendarDate(`${month}-01`),
+    onMonthChange: (day: Date) => onMonthChange(fromCalendarDate(day).slice(0, 7)),
+    numberOfMonths,
+    locale: vi,
+    weekStartsOn: 1 as const,
+    today: toCalendarDate(today),
+    startMonth: toCalendarDate(`${first.slice(0, 7)}-01`),
+    endMonth: toCalendarDate(last),
+    animate: false,
+    labels: {
+      labelPrevious: () => 'Tháng trước',
+      labelNext: () => 'Tháng sau',
+      labelDayButton: (day: Date, modifiers: { today?: boolean; selected?: boolean }) =>
+        `${day.toLocaleDateString('vi-VN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}${modifiers.today ? ', hôm nay' : ''}${modifiers.selected ? ', đã chọn' : ''}`,
+    },
+    disabled: (day: Date) => {
+      const key = fromCalendarDate(day);
+      return key < first || key > last || key > today || (selection === 'multiple' && (loading || !available.includes(key)));
+    },
+  };
+  return selection === 'range'
+    ? <DatePicker {...common} mode="range" selected={range} onChange={onRangeChange} />
+    : <DatePicker {...common} mode="multiple" selected={dates.map(toCalendarDate)}
+        onChange={(days) => onSelect((days ?? []).map(fromCalendarDate).sort())} />;
 }

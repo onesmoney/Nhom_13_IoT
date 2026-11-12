@@ -10,6 +10,7 @@ export function readTheme(host = window) {
 
 export function applyTheme(theme, host = window) {
   host.document.documentElement.dataset.theme = theme;
+  host.document.documentElement.dataset.mode = theme;
   host.document.documentElement.classList.toggle('dark', theme === 'dark');
   host.document.documentElement.style.colorScheme = theme;
 }
