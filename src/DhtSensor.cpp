@@ -1,8 +1,10 @@
 #include "DhtSensor.h"
+#include "LogTimestamp.h"
 
 DhtSensor::DhtSensor(uint8_t pin, unsigned long intervalMs)
     : _pin(pin), _intervalMs(intervalMs), _lastRead(0), _lastSuccessMs(0),
-      _hasReading(false), _temperature(NAN), _humidity(NAN), _failCount(0) {}
+      _hasReading(false), _temperature(NAN), _humidity(NAN), _failCount(0),
+      _hasLastGood(false), _lastGoodTemperature(NAN), _lastGoodHumidity(NAN) {}
 
 void DhtSensor::begin() {
   pinMode(_pin, INPUT_PULLUP); // line o trang thai nghi phai HIGH
@@ -72,20 +74,23 @@ void DhtSensor::readNow() {
     _failCount++;
     // chi log 3 lan dau va sau do moi 10 lan de tranh spam Serial
     if (_failCount <= 3 || _failCount % 10 == 0) {
-      Serial.println("Doc DHT that bai (lan " + String(_failCount) +
-                     "), kiem tra day noi/nguon...");
+      Serial.printf("%s Doc DHT that bai (lan %d), kiem tra day noi/nguon...\n",
+                    LogTimestamp().c_str(), _failCount);
     }
     return;
   }
 
   if (!_hasReading) {
-    Serial.println("DHT11: da nhan du lieu hop le");
+    Serial.printf("%s DHT11: da nhan du lieu hop le\n", LogTimestamp().c_str());
   }
   _failCount = 0;
   _hasReading = true;
   _lastSuccessMs = _lastRead;
   _humidity = data[0] + data[1] * 0.1f;
   _temperature = data[2] + (data[3] & 0x0F) * 0.1f;
+  _lastGoodTemperature = _temperature;
+  _lastGoodHumidity = _humidity;
+  _hasLastGood = true;
 }
 
 void DhtSensor::handle() {

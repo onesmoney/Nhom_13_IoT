@@ -228,11 +228,12 @@ void loop() {
       oledUpdateSensors();
     }
     if (FIREBASE_UPLOAD_ENABLED) {
-      firebase.handle(dhtSensor.hasReading(), dhtSensor.temperature(),
-                      dhtSensor.humidity(), bh1750.hasReading(),
+      firebase.handle(dhtSensor.hasUploadReading(), dhtSensor.uploadTemperature(),
+                      dhtSensor.uploadHumidity(), bh1750.hasReading(),
                       bh1750.lux(), pms7003.hasReading() && !pms7003.isStale(),
                       pms7003.pm1_0(),
-                      pms7003.pm2_5(), pms7003.pm10(), WiFi.RSSI());
+                      pms7003.pm2_5(), pms7003.pm10(), WiFi.RSSI(),
+                      dhtSensor.isUploadReadingStale());
     }
   } else if (provisioner.isPortalActive()) {
     if (millis() - lastPortalPrint >= 5000) {

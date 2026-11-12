@@ -23,6 +23,12 @@ public:
     return _hasReading ? millis() - _lastSuccessMs : 0;
   }
 
+  // Upload duoc dung mau tot gan nhat trong 2 lan doc loi lien tiep dau tien.
+  bool hasUploadReading() const { return _hasLastGood && _failCount < 3; }
+  bool isUploadReadingStale() const { return hasUploadReading() && _failCount > 0; }
+  float uploadTemperature() const { return hasUploadReading() ? _lastGoodTemperature : NAN; }
+  float uploadHumidity() const { return hasUploadReading() ? _lastGoodHumidity : NAN; }
+
 private:
   bool waitForEdge(int fromLevel, uint32_t timeoutUs);
   bool readRaw(uint8_t data[5]);
@@ -36,6 +42,9 @@ private:
   float _temperature;
   float _humidity;
   int _failCount;
+  bool _hasLastGood;
+  float _lastGoodTemperature;
+  float _lastGoodHumidity;
 };
 
 #endif // DHT_SENSOR_H
