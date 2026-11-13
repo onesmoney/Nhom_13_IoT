@@ -45,6 +45,7 @@ private:
   bool _hasLastGood;
   float _lastGoodTemperature;
   float _lastGoodHumidity;
+  uint8_t _warmupRemaining = 2;
 };
 
 #endif // DHT_SENSOR_H

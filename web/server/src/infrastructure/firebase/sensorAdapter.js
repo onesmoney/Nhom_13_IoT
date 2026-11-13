@@ -23,8 +23,13 @@ export function createSensorAdapter({ readSnapshot = get, transaction = runTrans
     transaction: (parent, id, update) => transaction(child(parent, id), update, { applyLocally: false }),
 
     subscribe({ dataRef, aggregateRef, realtime: listeners = realtime, unsubscribers,
-      onRaw, onSummary, onConnection, onCancel }) {
+      onRaw, onSummary, onConnection, onBackfill, onCancel }) {
       unsubscribers.push(listeners.onChildAdded(query(dataRef, orderByKey(), limitToLast(50)), onRaw, onCancel));
+      if (onBackfill) {
+        const registry = child(dataRef, '_backfills');
+        unsubscribers.push(listeners.onChildAdded(registry, onBackfill, onCancel));
+        unsubscribers.push(listeners.onChildChanged(registry, onBackfill, onCancel));
+      }
       if (aggregateRef) {
         unsubscribers.push(listeners.onChildChanged(query(dataRef, orderByKey(), limitToLast(50)), onRaw, onCancel));
         // Bucket keys are not creation cursors; inventory reconciles old additions.

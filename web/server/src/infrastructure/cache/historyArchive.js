@@ -124,6 +124,7 @@ export class HistoryArchive {
   }
 
   getOrLoad(options, load) {
+    if (this.invalidating) return this.invalidating.then(() => this.getOrLoad(options, load));
     const query = queryKey(options), key = hash(query);
     if (this.inflight.has(key)) return this.inflight.get(key);
     this.start();
@@ -139,8 +140,25 @@ export class HistoryArchive {
     return work;
   }
 
+  // Explicit device backfills supersede the normal three-day snapshot TTL.
+  // Let older writes finish before removal; gate new reads until it completes.
+  invalidate() {
+    if (this.invalidating) return this.invalidating;
+    this.invalidating = (async () => {
+      await this.initialize();
+      await Promise.allSettled([...this.inflight.values()]);
+      this.memory.clear();
+      for (const name of [...this.files.keys()]) {
+        await this.removeFile(name);
+        if (this.files.has(name)) throw Error('Could not invalidate historical backfill cache');
+      }
+    })().finally(() => { this.invalidating = null; });
+    return this.invalidating;
+  }
+
   async stop() {
     clearInterval(this.timer); this.timer = null;
     await Promise.allSettled([...this.inflight.values()]);
+    await this.invalidating;
   }
 }

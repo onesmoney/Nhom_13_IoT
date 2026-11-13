@@ -72,7 +72,7 @@ Nhánh tổng hợp là `sensorData5m`. Server cần đọc được cả nhánh
 
 Dữ liệu gần đây được giữ trong RAM để trình duyệt không phải truy vấn Firebase mỗi lần cập nhật. Cache trên ổ đĩa giúp server khôi phục dữ liệu sau khi khởi động lại; file đang dùng có hậu tố `.mixed-v2.json`. Khi kết nối lại, server đọc phần dữ liệu còn thiếu và đối chiếu các bản tổng hợp.
 
-Lịch sử của một ngày đã kết thúc được lưu riêng theo ngày và thiết bị trong thư mục `<CACHE_FILE>.history-v1/`. Cache này có hạn 72 giờ kể từ lúc tải xong. Xem lại hoặc bấm tải lại trong thời hạn đó vẫn dùng cache; các chỉnh sửa trên Firebase chỉ xuất hiện sau khi cache hết hạn và được tải lại. Ngày hôm nay được đọc từ Firebase.
+Lịch sử của một ngày đã kết thúc được lưu riêng theo ngày và thiết bị trong thư mục `<CACHE_FILE>.history-v1/`. Cache này có hạn 72 giờ kể từ lúc tải xong. Xem lại hoặc bấm tải lại trong thời hạn đó vẫn dùng cache; các chỉnh sửa trực tiếp trên Firebase chỉ xuất hiện sau khi cache hết hạn và được tải lại. Ngoại lệ: thông báo gửi bù của ESP32 tại `sensorData/_backfills` sẽ vô hiệu hóa cache lịch sử và đọc lại phần dữ liệu cũ, kể cả sau khi server khởi động lại. Ngày hôm nay được đọc từ Firebase.
 
 Khi mất kết nối, phần dữ liệu đã lưu vẫn có thể xem được và được đánh dấu chưa đồng bộ. Nếu triển khai trên máy chủ có ổ đĩa tạm, cần gắn vùng lưu trữ lâu dài để giữ cache qua các lần triển khai. Mỗi bộ cache chỉ dùng cho một tiến trình ghi.
 
@@ -81,7 +81,7 @@ Một số giới hạn cần biết:
 - Danh sách thiết bị lấy từ dữ liệu gần đây; thiết bị đã ngừng gửi lâu có thể không xuất hiện.
 - Ngày đầu tiên có dữ liệu được lưu trong RAM 24 giờ. Khởi động lại server sẽ tìm lại mốc này.
 - Truy vấn lịch sử có giới hạn số dòng và dung lượng. Nếu khoảng chọn quá lớn, cần chia thành các khoảng nhỏ hơn.
-- Bản ghi gửi quá trễ hoặc có đồng hồ sai có thể nằm ngoài khoảng tìm kiếm theo khóa Firebase. Khi `timestamp = 0`, server dùng thời gian trong khóa bản ghi.
+- Firmware LittleFS tạo khóa theo thời gian đo và thông báo khi gửi bù để server đọc lại dữ liệu trước cursor. Bản ghi cũ không theo cơ chế này hoặc có đồng hồ sai vẫn có thể nằm ngoài khoảng tìm kiếm. Khi `timestamp = 0`, server dùng thời gian trong khóa, trừ mẫu có `timeQuality="unknown"` sẽ được bỏ khỏi biểu đồ.
 - Việc sửa hoặc xóa dữ liệu cũ trực tiếp trên Firebase có thể không được cache phát hiện ngay.
 
 ## Các API chính

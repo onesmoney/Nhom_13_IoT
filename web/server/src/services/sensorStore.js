@@ -8,6 +8,7 @@ import { createMixedCache, mixedPayload, MIXED_CACHE_MAX_ROWS, MIXED_CACHE_MAX_B
 import { createSummaryInventory } from '../infrastructure/firebase/summaryInventory.js';
 import { createSensorAdapter } from '../infrastructure/firebase/sensorAdapter.js';
 import { normalizeReading, timeToPushPrefix } from '../domain/readings.js';
+import { validateBackfill } from '../domain/backfill.js';
 import { calendarBounds, todayVN } from '../../../shared/time.mjs';
 
 export const PAGE_SIZE = 1000;
@@ -16,7 +17,7 @@ export const MAX_MIXED_QUERY_BYTES = 32 * 1024 * 1024;
 export const CALENDAR_START_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_RECENT_ATTEMPTS = 2;
 // Explicit source revision: distinguishes a loaded process from files edited on disk.
-export const BUILD_REVISION = 'quota-mixed-durable-v4';
+export const BUILD_REVISION = 'quota-mixed-durable-v5-backfill';
 const RUNTIME = Object.freeze({ buildRevision: BUILD_REVISION, pid: process.pid,
   startedAt: Math.round(Date.now() - process.uptime() * 1000) });
 // Push keys record receipt time, while rows use the device timestamp. Read a
@@ -50,6 +51,8 @@ export class SensorStore extends EventEmitter {
     this.realtime = realtime ?? adapter.realtime;
     this.historyCache = new Map();
     this.historyInflight = new Map();
+    this.backfillRevisions = new Map();
+    this.deviceBackfillFrom = null;
     this.historyClosedTtlMs = historyClosedTtlMs;
     this.historyCurrentTtlMs = historyCurrentTtlMs;
     this.historyCacheEntries = historyCacheEntries;
@@ -181,6 +184,11 @@ export class SensorStore extends EventEmitter {
           dataRef: this.dataRef, aggregateRef: this.aggregatePath ? this.aggregateRef : null,
           realtime: this.realtime, unsubscribers: this.unsubscribers, onCancel,
           onRaw: (child) => { if (!this.stopped) this.add(child.key, child.val(), true); },
+          onBackfill: (child) => {
+            if (this.stopped) return;
+            try { this.onDeviceBackfill(child.key, child.val()); }
+            catch (error) { this.syncFailure(error); }
+          },
           onSummary: (child) => {
             if (this.stopped) return;
             try {
@@ -203,6 +211,58 @@ export class SensorStore extends EventEmitter {
 
   cleanupListeners() {
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
+  }
+
+  onDeviceBackfill(device, value) {
+    const marker = validateBackfill(device, value);
+    if (this.backfillRevisions.get(device) === marker.revision) return;
+    // Initial registry delivery after a backend restart must reconcile durable
+    // caches even if later boots have overwritten an earlier replay marker.
+    const from = this.backfillRevisions.has(device) ? marker.from : 0;
+    this.backfillRevisions.set(device, marker.revision);
+    this.deviceBackfillFrom = Math.min(this.deviceBackfillFrom ?? from, from);
+    clearTimeout(this.deviceBackfillTimer);
+    this.deviceBackfillTimer = setTimeout(() => { void this.reconcileDeviceBackfill(); }, 2000);
+    this.deviceBackfillTimer.unref?.();
+  }
+
+  reconcileDeviceBackfill() {
+    if (this.deviceBackfillWork) return this.deviceBackfillWork;
+    if (this.stopped || this.deviceBackfillFrom === null) return Promise.resolve();
+    this.deviceBackfillWork = (async () => {
+      while (!this.stopped && this.deviceBackfillFrom !== null) {
+        const from = this.deviceBackfillFrom;
+        this.deviceBackfillFrom = null;
+        try {
+          // Do not let an older scan commit a stale cursor after resetting it.
+          await Promise.allSettled([this.syncing, this.maintaining, ...this.historyInflight.values(),
+            ...(this.mixedInflight || [])].filter(Boolean));
+          if (this.stopped) return;
+          await this.historyArchive.invalidate();
+          await Promise.allSettled([this.syncing, this.maintaining].filter(Boolean));
+          this.historyCache.clear(); this.availabilityCache.clear(); this.calendarStartCache.clear();
+          this.historyInflight.clear();
+          this.scan = null;
+          if (this.recentCoverage && from > this.recentCoverage.from) {
+            const through = Math.min(this.recentCoverage.through, from);
+            this.recentCoverage = { ...this.recentCoverage,
+              through, cursor: timeToPushPrefix(through) };
+          } else this.recentCoverage = null;
+          // Persist the invalidated cursor as part of the successful rescan.
+          await this.backfill();
+        } catch (error) {
+          this.deviceBackfillFrom = Math.min(this.deviceBackfillFrom ?? from, from);
+          if (!this.stopped) {
+            this.syncFailure(error);
+            clearTimeout(this.deviceBackfillTimer);
+            this.deviceBackfillTimer = setTimeout(() => { void this.reconcileDeviceBackfill(); }, 15000);
+            this.deviceBackfillTimer.unref?.();
+          }
+          return;
+        }
+      }
+    })().finally(() => { this.deviceBackfillWork = null; });
+    return this.deviceBackfillWork;
   }
 
   waitForConnection() {
@@ -669,6 +729,7 @@ export class SensorStore extends EventEmitter {
 
   async stop() {
     this.stopped = true;
+    clearTimeout(this.deviceBackfillTimer);
     clearTimeout(this.retryTimer);
     clearTimeout(this.connectionTimer);
     clearInterval(this.pruneTimer);
@@ -677,7 +738,7 @@ export class SensorStore extends EventEmitter {
     for (const cancel of [...this.pendingReads]) cancel(syncError('STORE_STOPPED'));
     this.cleanupListeners();
     await this.compactor.stop();
-    await Promise.allSettled([this.starting, this.syncing, this.maintaining, ...this.historyInflight.values(), ...(this.mixedInflight || [])].filter(Boolean));
+    await Promise.allSettled([this.starting, this.syncing, this.maintaining, this.deviceBackfillWork, ...this.historyInflight.values(), ...(this.mixedInflight || [])].filter(Boolean));
     await this.historyArchive.stop();
     this.persist();
     await this.disk.flush();
@@ -965,7 +1026,7 @@ export class SensorStore extends EventEmitter {
         return (await this.mergedRange({ from, to, budget })).filter((row) => !device || row.device === device);
       };
       // Closed historical days are intentional three-day snapshots. Today's
-      // readings stay online; recent reconciliation never clears these files.
+      // readings stay online; explicit device backfills invalidate these files.
       return to < calendarBounds(todayVN(this.now())).from
         ? this.historyArchive.getOrLoad({ device, from, to }, load) : load();
     }

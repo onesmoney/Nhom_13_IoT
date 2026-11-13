@@ -57,7 +57,24 @@ const unsigned long IP_SHOW_MS = 5000; // hien IP 5 giay roi chuyen sang dong ho
 // so giay con lai + thanh progress; -1 khi portal mo hoac da ket noi.
 void buildClimateLines(String &line1, String &line2);
 
+// Also serviced by the provisioning callback while setup() waits for Wi-Fi.
+void sampleAndCacheSensors() {
+  dhtSensor.handle();
+  bh1750.handle();
+  pms7003.handle();
+  clockTime.handle();
+  if (FIREBASE_UPLOAD_ENABLED) {
+    firebase.handle(dhtSensor.hasUploadReading(), dhtSensor.uploadTemperature(),
+                    dhtSensor.uploadHumidity(), bh1750.hasReading(), bh1750.lux(),
+                    pms7003.hasReading() && !pms7003.isStale(), pms7003.pm1_0(),
+                    pms7003.pm2_5(), pms7003.pm10(),
+                    provisioner.isConnected() ? WiFi.RSSI() : 0,
+                    dhtSensor.isUploadReadingStale());
+  }
+}
+
 void oledProgress(int remainingSeconds) {
+  sampleAndCacheSensors();
   if (!oled.isReady() || oled.isPaused()) {
     return;
   }
@@ -218,22 +235,11 @@ void setup() {
 
 void loop() {
   provisioner.handle(); // ben trong da goi oledProgress() dinh ky
-  dhtSensor.handle();
-  bh1750.handle();
-  pms7003.handle();    // chi doc byte co san trong buffer UART, khong chan
-  clockTime.handle();  // sync lai NTP moi 1 gio
+  sampleAndCacheSensors();
 
   if (provisioner.isConnected()) {
     if (!oled.isPaused()) {
       oledUpdateSensors();
-    }
-    if (FIREBASE_UPLOAD_ENABLED) {
-      firebase.handle(dhtSensor.hasUploadReading(), dhtSensor.uploadTemperature(),
-                      dhtSensor.uploadHumidity(), bh1750.hasReading(),
-                      bh1750.lux(), pms7003.hasReading() && !pms7003.isStale(),
-                      pms7003.pm1_0(),
-                      pms7003.pm2_5(), pms7003.pm10(), WiFi.RSSI(),
-                      dhtSensor.isUploadReadingStale());
     }
   } else if (provisioner.isPortalActive()) {
     if (millis() - lastPortalPrint >= 5000) {

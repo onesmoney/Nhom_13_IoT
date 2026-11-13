@@ -7,6 +7,12 @@ DhtSensor::DhtSensor(uint8_t pin, unsigned long intervalMs)
       _hasLastGood(false), _lastGoodTemperature(NAN), _lastGoodHumidity(NAN) {}
 
 void DhtSensor::begin() {
+  _warmupRemaining = 2;
+  _lastRead = millis();
+  _lastSuccessMs = 0;
+  _hasReading = _hasLastGood = false;
+  _temperature = _humidity = _lastGoodTemperature = _lastGoodHumidity = NAN;
+  _failCount = 0;
   pinMode(_pin, INPUT_PULLUP); // line o trang thai nghi phai HIGH
   Serial.println("Khoi tao DHT11 tai GPIO " + String(_pin));
 }
@@ -77,6 +83,16 @@ void DhtSensor::readNow() {
       Serial.printf("%s Doc DHT that bai (lan %d), kiem tra day noi/nguon...\n",
                     LogTimestamp().c_str(), _failCount);
     }
+    return;
+  }
+
+  // Only checksum-valid frames count. Never seed the last-good fallback with
+  // either startup frame, including humidity from the same DHT11 transaction.
+  if (_warmupRemaining) {
+    --_warmupRemaining;
+    _failCount = 0;
+    Serial.printf("%s DHT11: bo qua mau khoi dong, con %u mau\n",
+                  LogTimestamp().c_str(), _warmupRemaining);
     return;
   }
 

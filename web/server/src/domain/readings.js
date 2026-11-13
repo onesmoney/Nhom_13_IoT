@@ -30,6 +30,9 @@ const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
 export function normalizeReading(key, raw) {
   if (!raw || typeof raw !== 'object') return null;
+  // The sibling registry is metadata, and unclocked data must never acquire a
+  // fabricated measurement time from its receipt-time push ID.
+  if (key === '_backfills' || raw.timeQuality === 'unknown') return null;
   const sensors = raw.sensors ?? {};
   const dht = sensors.DHT11 ?? {};
   const bh = sensors.BH1750 ?? {};

@@ -3,10 +3,11 @@
 
 #include <Arduino.h>
 #include "FirebaseDiagnostics.h"
+#include "OfflineQueue.h"
 
 class WiFiClientSecure;
 
-// Gui du lieu cam bien qua HTTPS REST vao /sensorData/<pushId>.
+// Ghi LittleFS truoc khi gui HTTPS; PATCH bang push ID co dinh, ACK sau 2xx.
 // Can bat Anonymous Auth va cau hinh rules chi cho phep truy cap can thiet.
 // Moi ban ghi gom deviceName, location, sensors, RSSI va timestamp (epoch giay).
 // Task mang xu ly dang nhap/gui; loop() chi cap nhat ban du lieu cho gui.
@@ -22,50 +23,35 @@ public:
   // Dat ten truoc khi begin(), vi du dung MAC ESP32 de phan biet thiet bi.
   void setDeviceName(const String &deviceName) { _deviceName = deviceName; }
 
-  // Goi trong loop(); nap du lieu khi du chu ky hoac trang thai hop le thay doi.
-  // Chi nap khi co WiFi; co has* = false thi gui ok=false va gia tri null.
+  // Goi ca khi offline. Cache theo chu ky co dinh de gioi han duoc X phut.
   void handle(bool hasDht, float temperature, float humidity,
               bool hasLux, float lux, bool hasPm, uint16_t pm1_0,
               uint16_t pm2_5, uint16_t pm10, int rssi, bool dhtStale);
 
   // Trang thai dang nhap, khong dam bao ket noi mang hay gui thanh cong.
   bool isReady() const { return _authed; }
-  // Moc millis() lan nap du lieu cho gui gan nhat, khong phai luc gui thanh cong.
+  // Moc millis() lan lay mau/thu ghi cache, khong phai luc gui thanh cong.
   unsigned long lastPushMs() const { return _lastPush; }
   unsigned long successCount() const { return _okCount; }
   unsigned long failCount() const { return _failCount; }
 
 private:
-  // Task tren core 0: lay du lieu, dang nhap, tao JSON va POST len Firebase.
+  // Task tren core 0: peek journal, dang nhap, PATCH, roi checkpoint ACK.
   static void networkTask(void *arg);
   void networkLoop();
   void signInAnonymously();
   void recordResult(const char *kind, FirebaseDiagnostics::Counters &stats, bool ok);
   void logSummary();
-  // Each state below has exactly one writer: worker, except handleOffline.
+  // Worker-owned request counters; storage counters are protected by _mutex.
   FirebaseDiagnostics::Counters _postStats, _authStats;
-  FirebaseDiagnostics::Interval _summaryInterval, _workerOffline, _handleOffline;
+  FirebaseDiagnostics::Interval _summaryInterval;
   uint32_t _requestId = 0;
-  uint32_t _workerSkipped = 0;
-  uint32_t _handleSkipped = 0;
   const char *_authReason = "initial_no_token";
   int httpRequest(WiFiClientSecure &client, const char *host,
                   const char *method, const String &path,
                   const String &body, String *response);
 
-  struct SensorReading {
-    bool hasDht;
-    bool dhtStale; // Danh dau mau cu de log dung ban du lieu thuc su gui.
-    float temperature;
-    float humidity;
-    bool hasLux;
-    float lux;
-    bool hasPm;
-    uint16_t pm1_0;
-    uint16_t pm2_5;
-    uint16_t pm10;
-    int rssi;
-  };
+  using SensorReading = CachedReading;
 
   const char *_apiKey;
   const char *_databaseUrl;
@@ -74,15 +60,15 @@ private:
   unsigned long _pushIntervalMs;
   // Theo doi ban da nap va trang thai hop le de quyet dinh lan nap tiep theo.
   bool _hasQueued;
-  uint8_t _lastQueuedValidity;
 
   String _host;
   String _idToken;
 
-  // Chi giu mot ban cho gui, ban moi ghi de ban cu; khong luu du moi mau khi mat mang.
-  // Mutex bao ve du lieu dung chung giua loop() va task mang.
-  SensorReading _pending;
-  volatile bool _hasPending;
+  // Mutex chi bao ve LittleFS/checkpoint, khong bao gio giu khi goi mang.
+  OfflineQueue *_queue = nullptr;
+  uint32_t _bootId = 0;
+  uint32_t _cacheWriteFailures = 0;
+  uint64_t _replayFrom = 0;
   SemaphoreHandle_t _mutex;
 
   volatile unsigned long _lastPush;

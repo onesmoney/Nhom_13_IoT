@@ -2,6 +2,45 @@
 #include "LogTimestamp.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <LittleFS.h>
+#include <esp_partition.h>
+#include <esp_system.h>
+#include <esp_timer.h>
+#include <sys/time.h>
+#include <algorithm>
+#include "OfflineCacheConfig.h"
+
+namespace {
+uint64_t epochMillis() {
+  timeval now; gettimeofday(&now, nullptr);
+  return now.tv_sec > 1700000000 ? uint64_t(now.tv_sec) * 1000 + now.tv_usec / 1000 : 0;
+}
+
+bool mountOfflineStorage() {
+  if (LittleFS.begin(false, "/littlefs", 5, "spiffs")) return true;
+  const esp_partition_t *partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "spiffs");
+  if (!partition) return false;
+  // Formatting is permitted only for an entirely erased, never-used partition.
+  uint8_t block[1024];
+  for (size_t offset = 0; offset < partition->size; offset += sizeof(block)) {
+    const size_t size = std::min(sizeof(block), size_t(partition->size - offset));
+    if (esp_partition_read(partition, offset, block, size) != ESP_OK) return false;
+    for (size_t i = 0; i < size; ++i) if (block[i] != 0xff) return false;
+  }
+  Serial.println("[CACHE] Phan vung trang: khoi tao LittleFS lan dau");
+  return LittleFS.format() && LittleFS.begin(false, "/littlefs", 5, "spiffs");
+}
+
+String jsonEscape(const char *value) {
+  String result;
+  for (const unsigned char *p = reinterpret_cast<const unsigned char *>(value); *p; ++p) {
+    if (*p < 32) { char escaped[7]; snprintf(escaped, sizeof(escaped), "\\u%04x", *p); result += escaped; }
+    else { if (*p == '"' || *p == '\\') result += '\\'; result += char(*p); }
+  }
+  return result;
+}
+}
+
 
 // REST API cua Identity Toolkit: dang nhap an danh -> tra ve idToken JWT.
 // idToken dung lam ?auth=... tren Realtime Database REST, het han sau 1h
@@ -178,12 +217,13 @@ FirebaseUploader::FirebaseUploader(const char *apiKey, const char *databaseUrl,
                                    unsigned long pushIntervalMs)
     : _apiKey(apiKey), _databaseUrl(databaseUrl),
       _deviceName(deviceName), _location(location),
-      _pushIntervalMs(pushIntervalMs), _hasQueued(false), _lastQueuedValidity(0),
+      _pushIntervalMs(pushIntervalMs), _hasQueued(false),
       _lastPush(0), _okCount(0), _failCount(0),
-      _begun(false), _authed(false), _hasPending(false), _mutex(nullptr),
+      _begun(false), _authed(false), _mutex(nullptr),
       _dbClient(nullptr) {}
 
 void FirebaseUploader::begin() {
+  if (_begun) return;
   // Tach host tu "https://host" bo phan protocol.
   String url(_databaseUrl);
   int p = url.indexOf("://");
@@ -194,20 +234,42 @@ void FirebaseUploader::begin() {
   }
 
   _mutex = xSemaphoreCreateMutex();
-  // Tao mot client TLS duy nhat va giu lai de tai su dung ket noi keep-alive.
-  // Client chi duoc truy cap boi networkTask, tranh dung dong thoi.
-  _dbClient = new WiFiClientSecure();
-  if (_dbClient != nullptr) {
-    _dbClient->setInsecure(); // TODO: thay bang CA certificate khi chot production.
+  if (!_mutex || !mountOfflineStorage()) {
+    Serial.println("[CACHE] LOI mount LittleFS; khong format du lieu cu. Upload chua khoi dong.");
+    return;
   }
-
-  // Core 0 = core phu (core 1 chay Arduino loop). Stack 8KB du cho TLS
-  // handshake + payload nho; uu tien thap de khong an CPU cua loop.
-  xTaskCreatePinnedToCore(networkTask, "fb_net", 8192, this, 1, nullptr, 0);
-
+  // Credit existing journal bytes when calculating capacity after a reboot.
+  size_t existing = 0;
+  File directory = LittleFS.open("/offline-v1", "r");
+  if (directory) {
+    for (File file = directory.openNextFile(); file; file = directory.openNextFile()) {
+      existing += file.size(); file.close();
+    }
+    directory.close();
+  }
+  const size_t free = LittleFS.totalBytes() - LittleFS.usedBytes();
+  const size_t spare = free > OFFLINE_CACHE_FS_RESERVE ? free - OFFLINE_CACHE_FS_RESERVE : 0;
+  // Half the spare space leaves room for LittleFS block/metadata amplification.
+  const size_t budget = std::min(OFFLINE_CACHE_MAX_BYTES, existing + spare / 2);
+  const size_t requested = (uint64_t(OFFLINE_CACHE_MINUTES) * 60000 + _pushIntervalMs - 1) / _pushIntervalMs;
+  const size_t capacity = std::min(requested, budget / sizeof(CachedReading));
+  _queue = new OfflineQueue(LittleFS);
+  if (!_queue || !_queue->begin(capacity)) {
+    Serial.println("[CACHE] LOI mo journal/dung luong; du lieu cu duoc giu lai.");
+    return;
+  }
+  _bootId = esp_random();
+  _dbClient = new WiFiClientSecure();
+  if (_dbClient) _dbClient->setInsecure();
+  if (!_dbClient || xTaskCreatePinnedToCore(networkTask, "fb_net", 8192, this, 1, nullptr, 0) != pdPASS) {
+    Serial.println("[CACHE] LOI tao network worker");
+    return;
+  }
   _begun = true;
-  Serial.printf("%s Firebase: configured chu ky=%lums\n",
-                LogTimestamp().c_str(), _pushIntervalMs);
+  Serial.printf("[CACHE] LittleFS free=%u capacity=%u records recovered=%u X_seconds=%lu dropped=%lu\n",
+                unsigned(free), unsigned(capacity), unsigned(_queue->count()),
+                static_cast<unsigned long>(capacity * _pushIntervalMs / 1000),
+                static_cast<unsigned long>(_queue->dropped()));
 }
 
 // ====================== phia loop() - khong chan ======================
@@ -217,45 +279,34 @@ void FirebaseUploader::handle(bool hasDht, float temperature, float humidity,
                               uint16_t pm1_0, uint16_t pm2_5, uint16_t pm10,
                               int rssi, bool dhtStale) {
   if (!_begun) return;
-  if (WiFi.status() != WL_CONNECTED) {
-    ++_handleSkipped;
-    if (_handleOffline.due(millis(), 60000, true)) {
-      Serial.printf("%s [WARN] Firebase offline snapshot skipped source=handle calls=%lu\n",
-                    LogTimestamp().c_str(), static_cast<unsigned long>(_handleSkipped));
-    }
-    return;
+  const uint32_t now = millis();
+  if (_hasQueued && now - _lastPush < _pushIntervalMs) return;
+  SensorReading reading;
+  reading.epochMs = epochMillis();
+  reading.uptimeMs = esp_timer_get_time() / 1000;
+  reading.bootId = _bootId;
+  reading.temperature = temperature; reading.humidity = humidity; reading.lux = lux;
+  reading.pm1_0 = pm1_0; reading.pm2_5 = pm2_5; reading.pm10 = pm10;
+  const bool wifi = WiFi.status() == WL_CONNECTED;
+  reading.flags = (hasDht ? CachedReading::Dht : 0) | (hasDht && dhtStale ? CachedReading::DhtStale : 0) |
+      (hasLux ? CachedReading::Lux : 0) | (hasPm ? CachedReading::Pm : 0) | (wifi ? CachedReading::Wifi : 0);
+  reading.rssi = wifi ? std::max(-127, std::min(0, rssi)) : 0;
+  cacheTimePrefix(reading.key, reading.epochMs);
+  static const char alphabet[] = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+  for (unsigned i = 8; i < sizeof(reading.key); ++i) reading.key[i] = alphabet[esp_random() & 63];
+  if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+  const uint32_t droppedBefore = _queue->dropped();
+  const bool stored = _queue->append(reading);
+  const uint32_t dropped = _queue->dropped();
+  xSemaphoreGive(_mutex);
+  _hasQueued = true; _lastPush = now;
+  if (!stored) {
+    ++_cacheWriteFailures;
+    Serial.printf("[CACHE] write_failed=%lu sample_not_persisted=1\n", static_cast<unsigned long>(_cacheWriteFailures));
   }
-  const unsigned long now = millis();
-  const uint8_t validity = (hasDht ? 1 : 0) | (hasLux ? 2 : 0) |
-                           (hasPm ? 4 : 0);
-  // Gui ngay snapshot dau tien va khi mat/co lai du lieu; trang thai khong
-  // doi van chi gui theo chu ky, khong tao vong retry mang trong loop().
-  if (_hasQueued && validity == _lastQueuedValidity &&
-      now - _lastPush < _pushIntervalMs) {
-    return;
-  }
-
-  // Bo ban moi nhat vao queue, task phu se lay ra push. Neu task dang ban
-  // (mang cham), ban nay ghi de len slot -> DB luon nhan du lieu moi nhat.
-  if (xSemaphoreTake(_mutex, 10) == pdTRUE) {
-    _pending.hasDht = hasDht;
-    _pending.dhtStale = hasDht && dhtStale;
-    _pending.temperature = temperature;
-    _pending.humidity = humidity;
-    _pending.hasLux = hasLux;
-    _pending.lux = lux;
-    _pending.hasPm = hasPm;
-    _pending.pm1_0 = pm1_0;
-    _pending.pm2_5 = pm2_5;
-    _pending.pm10 = pm10;
-    _pending.rssi = rssi;
-    _hasPending = true;
-    // Chi ghi nhan sau khi nap thanh cong; neu mutex ban thi vong sau thu lai.
-    _lastPush = now;
-    _lastQueuedValidity = validity;
-    _hasQueued = true;
-    xSemaphoreGive(_mutex);
-  }
+  if (dropped != droppedBefore)
+    Serial.printf("[CACHE] capacity_full: dropped_oldest=%lu total_dropped=%lu\n",
+                  static_cast<unsigned long>(dropped - droppedBefore), static_cast<unsigned long>(dropped));
 }
 
 // ====================== phia task phu - duoc phep block ======================
@@ -286,148 +337,125 @@ void FirebaseUploader::logSummary() {
       ? String(FirebaseDiagnostics::elapsed(now, _postStats.lastSuccess)) : String("never");
   const String authAge = _authStats.hasSuccess
       ? String(FirebaseDiagnostics::elapsed(now, _authStats.lastSuccess)) : String("never");
-  Serial.printf("%s [SUMMARY] Firebase post_ok=%lu post_fail=%lu post_streak=%lu "
+  size_t queued = 0; uint32_t dropped = 0;
+  if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    queued = _queue->count(); dropped = _queue->dropped(); xSemaphoreGive(_mutex);
+  }
+  Serial.printf("%s [SUMMARY] Firebase patch_ok=%lu patch_fail=%lu patch_streak=%lu "
                 "auth_ok=%lu auth_fail=%lu auth_streak=%lu post_last_success_age_ms=%s "
-                "auth_last_success_age_ms=%s worker_offline_skipped=%lu\n",
+                "auth_last_success_age_ms=%s cache_queued=%u cache_dropped=%lu\n",
                 LogTimestamp().c_str(), static_cast<unsigned long>(_postStats.successes),
                 static_cast<unsigned long>(_postStats.failures), static_cast<unsigned long>(_postStats.streak),
                 static_cast<unsigned long>(_authStats.successes), static_cast<unsigned long>(_authStats.failures),
                 static_cast<unsigned long>(_authStats.streak), postAge.c_str(), authAge.c_str(),
-                static_cast<unsigned long>(_workerSkipped));
+                unsigned(queued), static_cast<unsigned long>(dropped));
 }
 
 void FirebaseUploader::networkLoop() {
   SensorReading snap;
+  uint32_t retryMs = 1000;
   for (;;) {
-    logSummary(); // Also runs while idle; blocking requests can delay a summary.
-    // Cho den khi co du lieu moi (loop() danh thuc qua _hasPending).
-    if (!_hasPending) {
-      vTaskDelay(50 / portTICK_PERIOD_MS);
-      continue;
-    }
-
-    // Lay snapshot ra khoi queue -> loop() co the ghi ban moi ngay
-    // ma khong phai cho request dang chay xong.
-    if (xSemaphoreTake(_mutex, 50) == pdTRUE) {
-      snap = _pending;
-      _hasPending = false;
+    logSummary();
+    if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(250)); continue; }
+    uint64_t ticket = 0;
+    bool available = false;
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      available = _queue->peek(snap, ticket);
       xSemaphoreGive(_mutex);
-    } else {
-      continue;
     }
+    if (!available) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
 
-    if (WiFi.status() != WL_CONNECTED) {
-      ++_workerSkipped;
-      if (_workerOffline.due(millis(), 60000, true)) {
-        Serial.printf("%s [WARN] Firebase offline snapshot skipped source=worker count=%lu\n",
-                      LogTimestamp().c_str(), static_cast<unsigned long>(_workerSkipped));
-      }
-      continue; // mat WiFi: bo ban nay, handle() se khong nap them
-    }
-
-    // Chua co token -> dang nhap truoc. Block o day chi anh huong task nay.
     if (!_authed) {
+      _dbClient->stop(); // Do not retain a DB TLS session during auth TLS allocation.
       signInAnonymously();
-      if (!_authed) {
-        vTaskDelay(10000 / portTICK_PERIOD_MS); // thu lai sau 10s
-        continue;
+      if (!_authed) { vTaskDelay(pdMS_TO_TICKS(10000)); continue; }
+    }
+    const uint64_t nowEpoch = epochMillis();
+    // Wait for the first NTP sync before finalizing keys of unclocked samples.
+    if (!snap.epochMs && memcmp(snap.key, "--------", 8) == 0) {
+      if (!nowEpoch) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+      const uint64_t uptime = esp_timer_get_time() / 1000;
+      if (snap.bootId == _bootId && uptime >= snap.uptimeMs && nowEpoch > uptime - snap.uptimeMs)
+        snap.epochMs = nowEpoch - (uptime - snap.uptimeMs);
+      // A previous boot without NTP cannot be dated honestly. Keep timestamp=0,
+      // persist the receipt-time key and publish timeQuality=unknown for audit.
+      cacheTimePrefix(snap.key, snap.epochMs ? snap.epochMs : nowEpoch);
+      bool saved = false;
+      if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        saved = _queue->replaceHead(ticket, snap); xSemaphoreGive(_mutex);
       }
+      if (!saved) { vTaskDelay(pdMS_TO_TICKS(250)); continue; }
     }
-
-    // Dang nhap co the mat nhieu giay; uu tien trang thai cam bien moi nhat.
-    if (xSemaphoreTake(_mutex, 50) == pdTRUE) {
-      if (_hasPending) {
-        snap = _pending;
-        _hasPending = false;
-      }
-      xSemaphoreGive(_mutex);
-    } else {
-      continue;
-    }
-
-    // Timestamp neu NTP da sync (ClockTime da cau hinh GMT+7).
-    unsigned long ts = (unsigned long)time(nullptr);
-    if (ts < 1700000000UL) {
-      ts = 0;
-    }
+    const unsigned long ts = snap.epochMs / 1000;
+    const bool replay = snap.epochMs && (snap.bootId != _bootId || (nowEpoch > snap.epochMs && nowEpoch - snap.epochMs > 10000));
+    if (replay && (!_replayFrom || snap.epochMs < _replayFrom)) _replayFrom = snap.epochMs;
 
     // Build JSON - payload ~300 byte. Metadata kem moi ban ghi de query
     // orderByChild tren RTDB loc duoc theo device/location ngay tren server.
-    auto jsonEscape = [](const char *s) -> String {
-      String out;
-      for (const char *c = s; *c; c++) {
-        if (*c == '"' || *c == '\\') {
-          out += '\\';
-        }
-        out += *c;
-      }
-      return out;
-    };
-
     String json = "{";
     json += "\"deviceName\":\"" + jsonEscape(_deviceName.c_str()) + "\"";
     json += ",\"location\":\"" + jsonEscape(_location) + "\"";
     json += ",\"sensors\":{";
     json += "\"DHT11\":{";
     // JSON null (khong phai 0/chuoi rong); RTDB co the bo leaf null khi luu.
-    json += "\"temperature\":" + (snap.hasDht ? String(snap.temperature, 1) : String("null"));
-    json += ",\"humidity\":" + (snap.hasDht ? String(snap.humidity, 1) : String("null"));
-    json += ",\"ok\":" + String(snap.hasDht ? "true" : "false");
+    json += "\"temperature\":" + (snap.hasDht() ? String(snap.temperature, 1) : String("null"));
+    json += ",\"humidity\":" + (snap.hasDht() ? String(snap.humidity, 1) : String("null"));
+    json += ",\"ok\":" + String(snap.hasDht() ? "true" : "false");
+    json += ",\"stale\":" + String(snap.dhtStale() ? "true" : "false");
     json += "}";
     json += ",\"BH1750\":{";
-    json += "\"lux\":" + (snap.hasLux ? String(snap.lux, 1) : String("null"));
-    json += ",\"ok\":" + String(snap.hasLux ? "true" : "false");
+    json += "\"lux\":" + (snap.hasLux() ? String(snap.lux, 1) : String("null"));
+    json += ",\"ok\":" + String(snap.hasLux() ? "true" : "false");
     json += "}";
     // Key Firebase khong duoc chua dau ".", nen dung pm2_5 thay vi PM2.5
     json += ",\"PM\":{";
-    json += "\"pm1_0\":" + (snap.hasPm ? String(snap.pm1_0) : String("null"));
-    json += ",\"pm2_5\":" + (snap.hasPm ? String(snap.pm2_5) : String("null"));
-    json += ",\"pm10\":" + (snap.hasPm ? String(snap.pm10) : String("null"));
-    json += ",\"ok\":" + String(snap.hasPm ? "true" : "false");
+    json += "\"pm1_0\":" + (snap.hasPm() ? String(snap.pm1_0) : String("null"));
+    json += ",\"pm2_5\":" + (snap.hasPm() ? String(snap.pm2_5) : String("null"));
+    json += ",\"pm10\":" + (snap.hasPm() ? String(snap.pm10) : String("null"));
+    json += ",\"ok\":" + String(snap.hasPm() ? "true" : "false");
     json += "}";
     json += "}";
-    json += ",\"rssi\":" + String(snap.rssi);
+    json += ",\"rssi\":" + (snap.flags & CachedReading::Wifi ? String(int(snap.rssi)) : String("null"));
     json += ",\"timestamp\":" + String(ts);
+    json += ",\"timeQuality\":\"" + String(snap.epochMs ? "device" : "unknown") + "\"";
     json += "}";
 
-    String auth = "?auth=" + _idToken;
-
-    if (_dbClient == nullptr) {
-      RequestTrace trace(++_requestId, "POST");
-      trace.end(nullptr, false, "client_allocation", String());
-      _failCount++;
-      recordResult("POST", _postStats, false);
-      continue;
+    char key[21]; memcpy(key, snap.key, 20); key[20] = 0;
+    String update = "{\"" + String(key) + "\":" + json;
+    if (replay) {
+      // MAC is the configured device name. Remove forbidden key characters if
+      // another caller supplies a human-readable name instead.
+      String deviceKey = _deviceName;
+      for (const char *c = ".$#[]/"; *c; ++c) deviceKey.replace(String(*c), "_");
+      update += ",\"_backfills/" + jsonEscape(deviceKey.c_str()) + "\":{\"revision\":\"" + String(key) + "\"";
+      update += ",\"from\":" + String(static_cast<double>(_replayFrom), 0);
+      update += ",\"to\":" + String(static_cast<double>(snap.epochMs), 0);
+      update += ",\"updatedAt\":{\".sv\":\"timestamp\"}}";
     }
-
-    if (snap.hasDht && snap.dhtStale) {
-      Serial.printf("%s Firebase: dang POST du lieu DHT11 cu (T=%.1fC, H=%.1f%%)\n",
-                    LogTimestamp().c_str(), snap.temperature, snap.humidity);
-    }
+    update += "}";
     String errBody;
-    int code = httpRequest(*_dbClient, _host.c_str(), "POST",
-                           "/sensorData.json" + auth + "&print=silent",
-                           json, &errBody);
-    recordResult("POST", _postStats, code >= 200 && code < 300);
-    if (code == 0) {
-      // Loi ket noi/timeout: bo socket cu de lan sau connect lai sach.
-      _dbClient->stop();
-    }
-
-    if (code >= 200 && code < 300) {
-      _okCount++;
-    } else {
-      _failCount++;
-      const LogTimestamp stamp;
-      if (FIREBASE_VERBOSE_LOG) Serial.printf("%s Firebase: push loi HTTP %d (tong loi %lu)\n",
-                    stamp.c_str(), code, _failCount);
-      // 401/403: token het han hoac rules chan -> xoa de login lai
-      if (code == 401 || code == 403 || _failCount % 5 == 0) {
-        _authReason = code == 401 ? "http_401" : code == 403 ? "http_403" : "every_fifth_cumulative_post_failure";
-        Serial.printf("%s Firebase reauth scheduled reason=%s\n", LogTimestamp().c_str(), _authReason);
-        _idToken = "";
-        _authed = false;
+    const int code = httpRequest(*_dbClient, _host.c_str(), "PATCH",
+                                "/sensorData.json?auth=" + _idToken + "&print=silent", update, &errBody);
+    const bool ok = code >= 200 && code < 300;
+    recordResult("PATCH", _postStats, ok);
+    if (ok) {
+      bool acknowledged = false;
+      if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        acknowledged = _queue->acknowledge(ticket); xSemaphoreGive(_mutex);
       }
+      if (!acknowledged) Serial.println("[CACHE] ACK checkpoint failed/head evicted; stable ID protects retry");
+      ++_okCount; retryMs = 1000;
+      vTaskDelay(pdMS_TO_TICKS(25));
+    } else {
+      ++_failCount;
+      _dbClient->stop();
+      if (code == 401 || code == 403) {
+        _authReason = code == 401 ? "http_401" : "http_403";
+        _idToken = ""; _authed = false;
+      }
+      // Backoff applies only to the network task; sampling/persistence continues.
+      vTaskDelay(pdMS_TO_TICKS(retryMs + esp_random() % 500));
+      retryMs = std::min(uint32_t(30000), retryMs * 2);
     }
   }
 }
@@ -437,7 +465,7 @@ void FirebaseUploader::networkLoop() {
 int FirebaseUploader::httpRequest(WiFiClientSecure &client, const char *host,
                                   const char *method, const String &path,
                                   const String &body, String *response) {
-  RequestTrace trace(++_requestId, "POST");
+  RequestTrace trace(++_requestId, method);
   auto finish = [&](int code, const char *failure) {
     trace.bodyRead = response ? response->length() : trace.bodyRead;
     trace.end(&client, code >= 200 && code < 300, failure, response ? *response : String());
@@ -561,6 +589,9 @@ int FirebaseUploader::httpRequest(WiFiClientSecure &client, const char *host,
   trace.capture(client);
   if (connectionClose) {
     client.stop();
+  }
+  if (trace.headerShort || trace.bodyWritten != trace.bodyExpected || trace.malformed || !trace.headersComplete) {
+    client.stop(); return finish(0, "incomplete_http_response");
   }
   return finish(code, trace.headerShort ? stageNames[WriteHeaders] :
                 code == 0 ? stageNames[Status] : !trace.headersComplete ? stageNames[Headers] : "http_status");
