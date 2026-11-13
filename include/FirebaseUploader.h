@@ -2,6 +2,7 @@
 #define FIREBASE_UPLOADER_H
 
 #include <Arduino.h>
+#include "FirebaseDiagnostics.h"
 
 class WiFiClientSecure;
 
@@ -25,7 +26,7 @@ public:
   // Chi nap khi co WiFi; co has* = false thi gui ok=false va gia tri null.
   void handle(bool hasDht, float temperature, float humidity,
               bool hasLux, float lux, bool hasPm, uint16_t pm1_0,
-              uint16_t pm2_5, uint16_t pm10, int rssi);
+              uint16_t pm2_5, uint16_t pm10, int rssi, bool dhtStale);
 
   // Trang thai dang nhap, khong dam bao ket noi mang hay gui thanh cong.
   bool isReady() const { return _authed; }
@@ -39,12 +40,22 @@ private:
   static void networkTask(void *arg);
   void networkLoop();
   void signInAnonymously();
+  void recordResult(const char *kind, FirebaseDiagnostics::Counters &stats, bool ok);
+  void logSummary();
+  // Each state below has exactly one writer: worker, except handleOffline.
+  FirebaseDiagnostics::Counters _postStats, _authStats;
+  FirebaseDiagnostics::Interval _summaryInterval, _workerOffline, _handleOffline;
+  uint32_t _requestId = 0;
+  uint32_t _workerSkipped = 0;
+  uint32_t _handleSkipped = 0;
+  const char *_authReason = "initial_no_token";
   int httpRequest(WiFiClientSecure &client, const char *host,
                   const char *method, const String &path,
                   const String &body, String *response);
 
   struct SensorReading {
     bool hasDht;
+    bool dhtStale; // Danh dau mau cu de log dung ban du lieu thuc su gui.
     float temperature;
     float humidity;
     bool hasLux;

@@ -1,4 +1,5 @@
 import { autoDomain, axisTicks } from '../lib/chartDomain.js';
+import { LoaderCircle } from 'lucide-react';
 import {
   Area,
   AreaChart,
@@ -35,8 +36,11 @@ function timeAxis(from, to) {
 
 function ChartTooltip({ active, payload, label, units, formatter, labelFormatter, accessibilityLayer }) {
   if (!active || !payload?.length) return null;
-  // Match Recharts' default name sorting; the legend keeps declaration order instead.
-  const items = [...payload].sort((a, b) => a.name > b.name ? 1 : a.name < b.name ? -1 : 0);
+  // Follow the metric/legend order instead of sorting labels alphabetically
+  // (which would put PM10 before PM2.5).
+  const order = new Map(Object.keys(units).map((key, index) => [key, index]));
+  const items = [...payload].sort((a, b) =>
+    (order.get(a.dataKey) ?? order.size) - (order.get(b.dataKey) ?? order.size));
   return (
     <div className="m-0 whitespace-nowrap rounded-lg border border-input-line bg-surface p-2.5 text-[13px] text-text"
       role={accessibilityLayer ? 'status' : undefined}
@@ -97,15 +101,31 @@ function tooltip(units) {
   );
 }
 
-function ChartCard({ title, subtitle, children, empty }) {
+function ChartLoading({ title }) {
   return (
-    <section className="min-w-0 rounded-xl border border-line bg-surface px-4 py-3.5">
+    <div className="relative h-full overflow-hidden rounded-lg bg-page-bg/60" role="status" aria-label={`Đang tải dữ liệu ${title}`}>
+      <div className="absolute inset-6 grid grid-rows-4 border-l border-chart-grid/60 motion-safe:animate-pulse" aria-hidden="true">
+        {Array.from({ length: 4 }, (_, i) => <div key={i} className="border-b border-dashed border-chart-grid/60" />)}
+      </div>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="flex items-center gap-2 rounded-full border border-line bg-surface px-4 py-2 text-sm text-text-muted shadow-sm">
+          <LoaderCircle className="size-5 motion-safe:animate-spin" aria-hidden="true" />
+          <span>Đang tải dữ liệu…</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChartCard({ title, subtitle, children, empty, loading = false }) {
+  return (
+    <section className="min-w-0 rounded-xl border border-line bg-surface px-4 py-3.5" aria-busy={loading}>
       <header className="mb-2 flex flex-wrap items-baseline gap-2">
         <h2 className="text-[16px] font-bold">{title}</h2>
         {subtitle && <span className="text-[13px] text-text-muted">{subtitle}</span>}
       </header>
       <div className="h-[280px]">
-        {empty ? (
+        {loading ? <ChartLoading title={title} /> : empty ? (
           <div className="grid h-full place-items-center rounded-lg border border-dashed border-line text-[14px] text-text-muted">
             Không có dữ liệu trong khoảng này
           </div>
@@ -122,7 +142,7 @@ function ChartCard({ title, subtitle, children, empty }) {
 const hasAny = (points, keys) =>
   points.some((p) => keys.some((k) => p[k] !== null));
 
-export function ClimateChart({ points, from, to }) {
+export function ClimateChart({ points, from, to, loading = false }) {
   const domains = {
     temperature: autoDomain(points, 'temperature'),
     humidity: autoDomain(points, 'humidity'),
@@ -130,7 +150,7 @@ export function ClimateChart({ points, from, to }) {
   const empty = !hasAny(points, ['temperature', 'humidity']);
 
   return (
-    <ChartCard title="Nhiệt độ & Độ ẩm" subtitle="DHT11" empty={empty}>
+    <ChartCard title="Nhiệt độ & Độ ẩm" subtitle="DHT11" empty={empty} loading={loading}>
       <LineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: -8 }}>
         <CartesianGrid stroke={GRID} strokeDasharray="3 3" />
         {timeAxis(from, to)}
@@ -162,9 +182,9 @@ export function ClimateChart({ points, from, to }) {
   );
 }
 
-export function LightChart({ points, from, to }) {
+export function LightChart({ points, from, to, loading = false }) {
   return (
-    <ChartCard title="Cường độ ánh sáng" subtitle="BH1750 · lux" empty={!hasAny(points, ['lux'])}>
+    <ChartCard title="Cường độ ánh sáng" subtitle="BH1750 · lux" empty={!hasAny(points, ['lux'])} loading={loading}>
       <AreaChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: -8 }}>
         <defs>
           <linearGradient id="luxFill" x1="0" y1="0" x2="0" y2="1">
@@ -182,9 +202,9 @@ export function LightChart({ points, from, to }) {
   );
 }
 
-export function DustChart({ points, from, to }) {
+export function DustChart({ points, from, to, loading = false }) {
   return (
-    <ChartCard title="Bụi mịn" subtitle="PMS7003 · µg/m³" empty={!hasAny(points, ['pm1_0', 'pm2_5', 'pm10'])}>
+    <ChartCard title="Bụi mịn" subtitle="PMS7003 · µg/m³" empty={!hasAny(points, ['pm1_0', 'pm2_5', 'pm10'])} loading={loading}>
       <LineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: -8 }}>
         <CartesianGrid stroke={GRID} strokeDasharray="3 3" />
         {timeAxis(from, to)}
@@ -200,9 +220,9 @@ export function DustChart({ points, from, to }) {
   );
 }
 
-export function SignalChart({ points, from, to }) {
+export function SignalChart({ points, from, to, loading = false }) {
   return (
-    <ChartCard title="Tín hiệu WiFi" subtitle="RSSI · dBm" empty={!hasAny(points, ['rssi'])}>
+    <ChartCard title="Tín hiệu WiFi" subtitle="RSSI · dBm" empty={!hasAny(points, ['rssi'])} loading={loading}>
       <LineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: -8 }}>
         <CartesianGrid stroke={GRID} strokeDasharray="3 3" />
         {timeAxis(from, to)}

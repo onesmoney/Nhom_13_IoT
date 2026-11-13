@@ -12,6 +12,7 @@ export function useReadings(period, device, minRefreshMs) {
   if (device) params.set('device', device);
   const key = params.toString();
   const [result, setResult] = useState(null);
+  const [fetchingKey, setFetchingKey] = useState(null);
   const lastFetch = useRef(0);
   const timer = useRef(null);
   const request = useRef(null);
@@ -25,6 +26,7 @@ export function useReadings(period, device, minRefreshMs) {
     request.current?.controller.abort();
     const current = { key, controller: new AbortController(), done: false };
     request.current = current;
+    setFetchingKey(key);
     lastFetch.current = Date.now();
     try {
       const data = await fetchReadings(key, current.controller.signal);
@@ -37,6 +39,7 @@ export function useReadings(period, device, minRefreshMs) {
       }
     } finally {
       current.done = true;
+      if (request.current === current) setFetchingKey(null);
     }
   }, [key, enabled]);
 
@@ -57,6 +60,9 @@ export function useReadings(period, device, minRefreshMs) {
   }, [load, minRefreshMs]);
 
   const visible = result?.key === key ? result : null;
-  return { data: visible?.data, error: visible?.error, loading: enabled && !visible, reload: load, requestRefresh };
+  // Historical reloads have an existing result, but still need visible loading
+  // feedback. Recent background polls keep the current charts on screen.
+  const loading = enabled && (!visible || (period.mode === 'dates' && fetchingKey === key));
+  return { data: visible?.data, error: visible?.error, loading, refreshing: enabled && fetchingKey === key, reload: load, requestRefresh };
 }
 

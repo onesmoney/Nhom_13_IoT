@@ -6,12 +6,11 @@ export async function createReadingsResponse(store, { period, device }) {
   let rows, points;
   if (period.dates) {
     const groups = await store.selectedHistory({ device, dates: period.dates });
-    const missing = period.dates.filter((_, i) => !groups[i]?.length);
-    if (missing.length) return { error: `Không có dữ liệu cho thiết bị vào ngày: ${missing.join(', ')}`, invalidDates: missing };
     rows = groups.flat();
     points = [];
     // Sample each selected day separately, never average across an omitted day.
     for (const group of groups) {
+      if (!group.length) continue;
       if (points.length) points.push({ time: points.at(-1).time + 1, ...Object.fromEntries(METRICS.map((m) => [m, null])) });
       points.push(...toChartPoints(group, Math.max(2, Math.floor(400 / groups.length)), 30000));
     }

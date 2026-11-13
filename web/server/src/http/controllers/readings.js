@@ -91,7 +91,6 @@ export function readingsHandler(store) {
     const device = req.query.device || undefined;
     try {
       const body = await createReadingsResponse(store, { period, device });
-      if (body.invalidDates) return res.status(400).json(body);
       if (!period.historical) res.set?.('X-Data-Source', body.dataSource);
       res.set?.('Cache-Control', 'no-store');
       res.json(body);

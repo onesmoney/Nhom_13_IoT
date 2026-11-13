@@ -9,7 +9,7 @@ const badgeClasses = {
   '#7f1d1d': 'bg-[#7f1d1d]',
 };
 
-function StatCard({ label, value, unit, digits = 1, accent, stat, badge }) {
+function StatCard({ label, value, unit, digits = 1, accent, stat, badge, showAverage = true }) {
   return (
     <div className={`rounded-xl border border-line border-t-[3px] bg-surface px-4 py-3.5 ${accent}`}>
       <div className="text-[13px] text-text-muted">{label}</div>
@@ -24,7 +24,8 @@ function StatCard({ label, value, unit, digits = 1, accent, stat, badge }) {
           </span>
         ) : stat ? (
           <span className="text-xs text-text-muted">
-            min {formatValue(stat.min, digits)} · TB {formatValue(stat.avg, digits)} · max{' '}
+            min {formatValue(stat.min, digits)}
+            {showAverage && <> · TB {formatValue(stat.avg, digits)}</>} · max{' '}
             {formatValue(stat.max, digits)}
           </span>
         ) : (
@@ -35,14 +36,19 @@ function StatCard({ label, value, unit, digits = 1, accent, stat, badge }) {
   );
 }
 
-export default function StatCards({ latest, stats }) {
-  const r = latest ?? {};
+export default function StatCards({ mode = 'recent', latest, stats }) {
   const s = stats ?? {};
+  const average = mode === 'dates';
+  const r = average
+    ? Object.fromEntries(Object.entries(s).map(([metric, stat]) => [metric, stat?.avg ?? null]))
+    : latest ?? {};
   return (
+    <section aria-label={average ? 'Trung bình các ngày đã chọn' : 'Số đo mới nhất'}>
+      {average && <p className="mb-2 text-xs text-text-muted">Trung bình trong các ngày đã chọn</p>}
     <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
-      <StatCard label="Nhiệt độ" value={r.temperature} unit="°C" accent="border-t-[#ef4444]" stat={s.temperature} />
-      <StatCard label="Độ ẩm" value={r.humidity} unit="%" digits={0} accent="border-t-[#3b82f6]" stat={s.humidity} />
-      <StatCard label="Ánh sáng" value={r.lux} unit="lux" accent="border-t-[#f59e0b]" stat={s.lux} />
+      <StatCard label="Nhiệt độ" value={r.temperature} unit="°C" accent="border-t-[#ef4444]" stat={s.temperature} showAverage={!average} />
+      <StatCard label="Độ ẩm" value={r.humidity} unit="%" digits={0} accent="border-t-[#3b82f6]" stat={s.humidity} showAverage={!average} />
+      <StatCard label="Ánh sáng" value={r.lux} unit="lux" accent="border-t-[#f59e0b]" stat={s.lux} showAverage={!average} />
       <StatCard
         label="PM2.5"
         value={r.pm2_5}
@@ -51,7 +57,8 @@ export default function StatCards({ latest, stats }) {
         accent="border-t-[#a855f7]"
         badge={pm25Level(r.pm2_5)}
       />
-      <StatCard label="PM10" value={r.pm10} unit="µg/m³" digits={0} accent="border-t-[#64748b]" stat={s.pm10} />
+      <StatCard label="PM10" value={r.pm10} unit="µg/m³" digits={0} accent="border-t-[#64748b]" stat={s.pm10} showAverage={!average} />
     </div>
+    </section>
   );
 }

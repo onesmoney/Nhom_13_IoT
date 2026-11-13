@@ -1,7 +1,7 @@
-import { Moon, Sun } from 'lucide-react';
+import { Moon, RefreshCw, Sun } from 'lucide-react';
 import { ClimateChart, DustChart, LightChart } from './components/Charts.jsx';
 import StatCards from './components/StatCards.jsx';
-import { ConnectionState, DeviceState } from './components/StatusBar.jsx';
+import { ConnectionState, DeviceState, statusPill } from './components/StatusBar.jsx';
 import TimePicker from './components/TimePicker.jsx';
 import { useDashboard } from './hooks/useDashboard.js';
 
@@ -13,9 +13,10 @@ const infoAlert = 'rounded-lg border border-[#bfdbfe] bg-[#eff6ff] px-3.5 py-2.5
 export default function DashboardPage() {
   const {
     period, setPeriod, selected, setSelected, theme, toggleTheme,
-    devices, device, availability, available, data, error, loading, reload,
+    devices, device, data, error, loading, chartsLoading, refreshing, reload,
     status, connected, cachedDataNotice, points, from, to, statReading, liveLatest,
   } = useDashboard();
+  const refreshBusy = chartsLoading || refreshing;
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-4 px-6 pt-5 pb-10 max-[600px]:px-3 max-[600px]:pt-4 max-[600px]:pb-7">
@@ -26,7 +27,7 @@ export default function DashboardPage() {
         <div className="flex flex-wrap items-center gap-2">
           <ConnectionState connected={connected} status={status} />
           <DeviceState latest={liveLatest} stale={Boolean(status?.cache?.available && status.cache.stale)} />
-          <button type="button" className={`${control} h-9 w-[84px] flex-[0_0_84px] justify-center whitespace-nowrap`} aria-label="Chế độ tối" aria-pressed={theme === 'dark'}
+          <button type="button" className={`${statusPill} w-[84px] shrink-0 cursor-pointer justify-center whitespace-nowrap text-text hover:bg-page-bg focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-focus`} aria-label="Chế độ tối" aria-pressed={theme === 'dark'}
             onClick={toggleTheme}>
             {theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
             {theme === 'dark' ? 'Sáng' : 'Tối'}
@@ -38,7 +39,7 @@ export default function DashboardPage() {
         <label className="flex min-w-0 max-w-full items-center gap-2 text-sm max-[600px]:flex-1">
           Thiết bị
           <select
-            className="min-w-0 max-w-full rounded-lg border border-[#9ca3af] bg-white px-2.5 py-1.5 text-inherit focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#2563eb] disabled:cursor-default max-[600px]:flex-1 dark:border-[#64748b] dark:bg-[#1e293b] dark:focus-visible:outline-[#93c5fd]"
+            className="h-10 min-w-0 max-w-full rounded-lg border border-[#9ca3af] bg-white px-2.5 py-0 text-inherit leading-5 focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#2563eb] disabled:cursor-default max-[600px]:flex-1 dark:border-[#64748b] dark:bg-[#1e293b] dark:focus-visible:outline-[#93c5fd]"
             value={device}
             onChange={(e) => setSelected(e.target.value)}
             disabled={devices.length === 0 && !selected}
@@ -54,9 +55,16 @@ export default function DashboardPage() {
             ))}
           </select>
         </label>
-        <span className={muted} role="status">{loading ? 'Đang tải…' : ''}</span>
-        <div className="ml-auto max-[600px]:ml-0 max-[600px]:w-full"><TimePicker value={period} device={device} extent={available} onChange={setPeriod} /></div>
-        {period.mode === 'dates' && <button type="button" className={control} onClick={reload}>Tải lại lịch sử</button>}
+        <span className={muted} role="status">{chartsLoading ? 'Đang tải…' : ''}</span>
+        <div className="ml-auto flex min-w-0 max-w-full items-center gap-3 max-[600px]:ml-0 max-[600px]:w-full">
+          <div className="min-w-0 max-[600px]:flex-1"><TimePicker value={period} device={device} onChange={setPeriod} /></div>
+          <button type="button"
+            className={`${control} size-10 shrink-0 justify-center disabled:cursor-wait disabled:opacity-60`}
+            aria-label="Tải lại dữ liệu" title="Tải lại dữ liệu" aria-busy={refreshBusy}
+            disabled={refreshBusy || !device} onClick={reload}>
+            <RefreshCw size={18} aria-hidden="true" className={refreshBusy ? 'motion-safe:animate-spin' : undefined} />
+          </button>
+        </div>
       </div>
 
       {status?.firebase === 'error' && (
@@ -64,8 +72,7 @@ export default function DashboardPage() {
           <strong>Không đọc được Firebase:</strong> {status.error}
         </div>
       )}
-      {availability.error && <div className={errorAlert} role="alert">{availability.error} <button type="button" className={control} onClick={availability.reload}>Thử lại</button></div>}
-      {device && available && !available.first && <div className={infoAlert}>Thiết bị này chưa có dữ liệu. Hãy chọn thiết bị khác.</div>}
+      {period.mode === 'dates' && data && !loading && !error && data.count === 0 && <div className={infoAlert}>Không có dữ liệu trong các ngày đã chọn.</div>}
       {error && (
         <div className={errorAlert} role="alert">
           <strong>Không tải được dữ liệu:</strong> {error} <button type="button" className={control} onClick={reload}>Thử lại</button>
@@ -79,15 +86,7 @@ export default function DashboardPage() {
 
       {cachedDataNotice && <div className={infoAlert} role="status">{cachedDataNotice}</div>}
 
-      <StatCards latest={statReading} stats={data?.stats} />
-
-      {status?.aggregatePath && (
-        <p className={muted}>
-          Lịch sử kết hợp số đo gốc và trung vị từng khoảng 5 phút đã gộp.
-          Dữ liệu chưa gộp hoặc đến muộn vẫn được giữ hiển thị;
-          thống kê min/TB/max được tính từ thông tin mẫu gốc, không phải trung bình các trung vị.
-        </p>
-      )}
+      <StatCards mode={period.mode} latest={statReading} stats={data?.stats} />
 
       {data?.partialBucketCoverage && (
         <p className={muted}>
@@ -97,9 +96,9 @@ export default function DashboardPage() {
       )}
 
       <div className="grid grid-cols-1 gap-3">
-        <ClimateChart points={points} from={from} to={to} />
-        <LightChart points={points} from={from} to={to} />
-        <DustChart points={points} from={from} to={to} />
+        <ClimateChart points={points} from={from} to={to} loading={chartsLoading} />
+        <LightChart points={points} from={from} to={to} loading={chartsLoading} />
+        <DustChart points={points} from={from} to={to} loading={chartsLoading} />
       </div>
     </div>
   );

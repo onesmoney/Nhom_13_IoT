@@ -35,9 +35,9 @@ export function periodLabel(value) {
   return isContinuous(dates) ? `${shortDate(dates[0])} – ${shortDate(dates.at(-1))}` : `${dates.length} ngày đã chọn`;
 }
 
-// Only the current keyed availability result may validate a draft selection.
+// Every day within the calendar bounds is selectable, including empty days.
 export function validatedDraft(dates, data) {
   if (!dates.length || dates.length > MAX_SELECTED_DAYS || !data) return { dates: [], skipped: [] };
-  const valid = new Set(data.validDates);
-  return { dates: dates.filter((day) => valid.has(day)), skipped: dates.filter((day) => !valid.has(day)) };
+  const valid = (day) => !!data.first && day >= data.first && day <= data.last;
+  return { dates: dates.filter(valid), skipped: dates.filter((day) => !valid(day)) };
 }

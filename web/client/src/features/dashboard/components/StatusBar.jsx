@@ -3,7 +3,7 @@ import { useNow } from '../../../hooks/useNow.js';
 
 // ESP32 gui moi 5s: qua nguong nay khong co ban ghi moi -> coi la offline.
 const DEVICE_TIMEOUT_MS = 30 * 1000;
-const pill = 'inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-[5px] text-[13px]';
+export const statusPill = 'inline-flex min-h-9 items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-[5px] text-[13px] leading-5';
 const states = { ok: 'text-success', warn: 'text-warning', err: 'text-danger' };
 const dot = 'size-2 shrink-0 rounded-full bg-current';
 
@@ -12,9 +12,9 @@ export function DeviceState({ latest, stale = false }) {
   if (!latest) return null;
   const online = !stale && now - latest.time < DEVICE_TIMEOUT_MS;
   return (
-    <span className={`${pill} ${online ? states.ok : states.warn}`} title={formatDateTime(latest.time)}>
+    <span className={`${statusPill} ${online ? states.ok : states.warn}`} title={`Cập nhật lần cuối: ${formatDateTime(latest.time)}`}>
       <span className={`${dot} ${online ? 'motion-safe:animate-pulse' : ''}`} />
-      {stale ? 'Chưa xác nhận trạng thái thiết bị' : online ? 'Thiết bị đang gửi' : 'Thiết bị offline'} · cập nhật {formatAgo(latest.time)}
+      {stale ? 'Chưa xác nhận' : online ? 'Đang gửi' : 'Offline'} · {formatAgo(latest.time)}
     </span>
   );
 }
@@ -36,7 +36,7 @@ export function ConnectionState({ connected, status }) {
     }
   }
   return (
-    <span className={`${pill} ${states[cls]}`}>
+    <span className={`${statusPill} ${states[cls]}`}>
       <span className={`${dot} ${cls === 'ok' ? 'motion-safe:animate-pulse' : ''}`} />
       {text}
     </span>

@@ -9,14 +9,14 @@ import { datesInRange, historicalPresets, isContinuous, periodLabel, RECENT_RANG
 
 export { periodLabel } from '../lib/datePresets.mjs';
 
-function CalendarSelection({ value, device, extent, onApply, onCancel }) {
+function CalendarSelection({ value, device, onApply, onCancel }) {
   const [dates, setDates] = useState(value.dates ?? []);
   const [mode, setMode] = useState(value.mode);
   const [recentRange, setRecentRange] = useState(value.range ?? '1h');
   const [selection, setSelection] = useState(value.dates?.length && !isContinuous(value.dates) ? 'multiple' : 'range');
   const [dateRange, setDateRange] = useState(() => value.dates?.length && isContinuous(value.dates)
     ? { from: toCalendarDate(value.dates[0]), to: toCalendarDate(value.dates.at(-1)) } : undefined);
-  const [month, setMonth] = useState(() => (value.dates?.[0] || extent?.last || todayVN()).slice(0, 7));
+  const [month, setMonth] = useState(() => (value.dates?.[0] || todayVN()).slice(0, 7));
   const [wide, setWide] = useState(() => window.matchMedia('(min-width: 960px)').matches);
   useEffect(() => {
     const query = window.matchMedia('(min-width: 960px)');
@@ -24,10 +24,9 @@ function CalendarSelection({ value, device, extent, onApply, onCancel }) {
     query.addEventListener('change', update);
     return () => query.removeEventListener('change', update);
   }, []);
-  const availability = useAvailability(device, month, mode === 'dates' ? dates : []);
+  const availability = useAvailability(device);
   const data = availability.data;
-  const calendar = availability.calendar;
-  const bounds = calendar || extent;
+  const bounds = data;
   const today = todayVN();
   const { dates: validDates, skipped } = validatedDraft(dates, data);
   const [message, setMessage] = useState('');
@@ -90,20 +89,21 @@ function CalendarSelection({ value, device, extent, onApply, onCancel }) {
           <Button variant={selection === 'range' ? 'primary' : 'outline'} aria-pressed={selection === 'range'} onClick={() => switchSelection('range')}>Khoảng ngày</Button>
           <Button variant={selection === 'multiple' ? 'primary' : 'outline'} aria-pressed={selection === 'multiple'} onClick={() => switchSelection('multiple')}>Từng ngày</Button>
         </div>
-        <p className="mb-3 text-sm text-kumo-subtle">{selection === 'range' ? 'Chọn ngày bắt đầu và ngày kết thúc.' : 'Chọn các ngày có dữ liệu, không cần liền nhau.'}</p>
+        <p className="mb-3 text-sm text-kumo-subtle">{selection === 'range' ? 'Chọn ngày bắt đầu và ngày kết thúc.' : 'Chọn các ngày muốn xem, không cần liền nhau.'}</p>
         {bounds?.first ? <DashboardDateSelector dates={mode === 'dates' ? dates : []} range={mode === 'dates' ? dateRange : undefined}
           selection={selection} month={month} first={bounds.first} last={bounds.last}
-          available={calendar?.days || []} loading={!calendar} numberOfMonths={wide && selection === 'range' ? 2 : 1}
+          numberOfMonths={wide && selection === 'range' ? 2 : 1}
           today={today} onMonthChange={setMonth} onRangeChange={selectRange} onSelect={(next) => {
             if (next.length > MAX_SELECTED_DAYS) { setMessage(`Tối đa ${MAX_SELECTED_DAYS} ngày mỗi lần.`); return; }
             setMessage(''); setMode('dates'); setDates(next);
           }} /> : <p className="py-8 text-sm text-kumo-subtle">{availability.loading ? 'Đang tải lịch…' : 'Chưa có ngày để hiển thị.'}</p>}
         <div className="mt-3 text-sm text-kumo-subtle" aria-live="polite">
-          {!device ? 'Chưa có thiết bị' : availability.loading ? 'Đang kiểm tra ngày có dữ liệu…'
+          {!device ? 'Chưa có thiết bị' : availability.loading ? 'Đang tìm ngày có dữ liệu cũ nhất…'
             : availability.error ? <span role="alert">{availability.error} <Button variant="ghost" onClick={availability.reload}>Thử lại</Button></span>
-            : !data?.first ? 'Thiết bị chưa có dữ liệu.' : mode === 'dates' ? `${validDates.length} ngày có dữ liệu trong ${dates.length} ngày đã chọn.` : 'Khoảng giờ gần đây tiếp tục cập nhật tự động.'}
+            : !data?.first ? 'Thiết bị chưa có dữ liệu.' : mode === 'dates' ? `${validDates.length} ngày đã chọn. Ngày không có dữ liệu sẽ để trống.` : 'Khoảng giờ gần đây tiếp tục cập nhật tự động.'}
+          {data?.first && <p>Có thể chọn từ {shortDate(data.first)} đến hôm nay.</p>}
           {mode === 'dates' && !complete && <p>Chọn thêm ngày kết thúc để áp dụng.</p>}
-          {mode === 'dates' && skipped.length > 0 && <p>Sẽ bỏ qua {skipped.length} ngày không có dữ liệu: {skipped.map(shortDate).join(', ')}.</p>}
+          {mode === 'dates' && skipped.length > 0 && <p>{skipped.length} ngày nằm ngoài khoảng cho phép: {skipped.map(shortDate).join(', ')}.</p>}
           {message && <p role="alert" className="text-error-text">{message}</p>}
         </div>
         {mode === 'dates' && selection === 'multiple' && dates.length > 0 && <div className="mt-3 flex max-h-24 flex-wrap gap-1 overflow-auto" aria-label="Ngày đã chọn">
@@ -112,8 +112,7 @@ function CalendarSelection({ value, device, extent, onApply, onCancel }) {
         </div>}
       </div>
     </div>
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line p-3">
-      <span className="text-xs text-kumo-subtle">UTC+7 · Tối đa {MAX_SELECTED_DAYS} ngày / 100.000 bản ghi</span>
+    <div className="flex flex-wrap items-center justify-end gap-3 border-t border-kumo-line p-3">
       <div className="flex gap-2">
         <Button variant="outline" onClick={onCancel}>Hủy</Button>
         <Button variant="primary" disabled={!canApply} onClick={() => onApply(mode === 'recent'
@@ -123,18 +122,18 @@ function CalendarSelection({ value, device, extent, onApply, onCancel }) {
   </>;
 }
 
-export default function TimePicker({ value, device, extent, onChange }) {
+export default function TimePicker({ value, device, onChange }) {
   const [open, setOpen] = useState(false);
   const titleId = useId();
   return <Popover open={open} onOpenChange={setOpen}>
-    <Popover.Trigger render={<Button variant="outline" className="h-auto min-h-10 max-w-full whitespace-normal text-left" />}>
-      <CalendarDotsIcon aria-hidden="true" size={18} />{periodLabel(value)}<CaretDownIcon aria-hidden="true" size={16} />
+    <Popover.Trigger render={<Button variant="outline" className="h-10 min-h-10 min-w-0 max-w-full rounded-lg whitespace-nowrap text-left text-sm leading-5 max-[600px]:w-full" />}>
+      <CalendarDotsIcon aria-hidden="true" size={18} className="shrink-0" /><span className="truncate">{periodLabel(value)}</span><CaretDownIcon aria-hidden="true" size={16} className="shrink-0" />
     </Popover.Trigger>
     <Popover.Portal>
       <Popover.Positioner sideOffset={8} align="end" collisionPadding={12} className="z-30">
         <Popover.Popup aria-labelledby={titleId} className="sensor-time-picker max-h-[min(var(--available-height,100dvh),calc(100dvh_-_24px))] w-max max-w-[calc(100vw_-_24px)] overflow-y-auto overscroll-contain p-0">
           <Popover.Title id={titleId} className="border-b border-kumo-line px-4 py-3 text-sm font-semibold">Chọn thời gian cảm biến</Popover.Title>
-          {open && <CalendarSelection key={device} value={value} device={device} extent={extent}
+          {open && <CalendarSelection key={device} value={value} device={device}
             onCancel={() => setOpen(false)} onApply={(next) => { onChange(next); setOpen(false); }} />}
         </Popover.Popup>
       </Popover.Positioner>

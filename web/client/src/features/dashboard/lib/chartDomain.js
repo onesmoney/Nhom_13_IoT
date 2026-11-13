@@ -1,3 +1,21 @@
+const CHART_METRICS = ['temperature', 'humidity', 'lux', 'pm1_0', 'pm2_5', 'pm10', 'rssi'];
+
+export function chartTimeDomain(points, from, to, fitData = false) {
+  // Live charts keep their rolling window; history fits the measurements that
+  // were actually returned. Null separators must not extend the visible range.
+  if (!fitData) return [from, to];
+  let first = Infinity;
+  let last = -Infinity;
+  for (const point of points) {
+    if (!Number.isFinite(point.time) || point.time < from || point.time > to ||
+        !CHART_METRICS.some((metric) => Number.isFinite(point[metric]))) continue;
+    first = Math.min(first, point.time);
+    last = Math.max(last, point.time);
+  }
+  // Keep a usable axis for empty results or a single measurement timestamp.
+  return first < last ? [first, last] : [from, to];
+}
+
 export function autoDomain(points, metric) {
   const humidity = metric === 'humidity';
   const fallback = humidity ? [0, 100] : [0, 50];

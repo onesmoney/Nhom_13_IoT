@@ -3,15 +3,17 @@ import { safeLogText } from '../infrastructure/statusLogger.js';
 import { Compactor } from './compactor.js';
 import { BUCKET_MS, fingerprint, mergeReadings, validatePaths, validateSummary } from '../domain/compaction.js';
 import { FileCache, CACHE_VERSION, cacheTarget } from '../infrastructure/cache/fileCache.js';
+import { HistoryArchive } from '../infrastructure/cache/historyArchive.js';
 import { createMixedCache, mixedPayload, MIXED_CACHE_MAX_ROWS, MIXED_CACHE_MAX_BYTES } from '../infrastructure/cache/mixedCache.js';
 import { createSummaryInventory } from '../infrastructure/firebase/summaryInventory.js';
 import { createSensorAdapter } from '../infrastructure/firebase/sensorAdapter.js';
 import { normalizeReading, timeToPushPrefix } from '../domain/readings.js';
-import { calendarBounds, addDays, shiftMonth, todayVN } from '../../../shared/time.mjs';
+import { calendarBounds, todayVN } from '../../../shared/time.mjs';
 
 export const PAGE_SIZE = 1000;
 export const MAX_QUERY_ROWS = 100000;
 export const MAX_MIXED_QUERY_BYTES = 32 * 1024 * 1024;
+export const CALENDAR_START_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_RECENT_ATTEMPTS = 2;
 // Explicit source revision: distinguishes a loaded process from files edited on disk.
 export const BUILD_REVISION = 'quota-mixed-durable-v4';
@@ -53,6 +55,7 @@ export class SensorStore extends EventEmitter {
     this.historyCacheEntries = historyCacheEntries;
     this.historyCacheBytes = historyCacheBytes;
     this.availabilityCache = new Map();
+    this.calendarStartCache = new Map();
     this.firebaseConfig = firebase;
     Object.assign(this, validatePaths(dataPath, aggregatePath || (compaction.enabled ? 'sensorData5m' : null)));
     this.generation = 0;
@@ -88,6 +91,9 @@ export class SensorStore extends EventEmitter {
       fileCacheOptions?.onError?.(error);
     } };
     this.disk = this.aggregatePath ? createMixedCache(cacheFile, target, diskOptions) : new FileCache(cacheFile, target, diskOptions);
+    this.historyArchive = new HistoryArchive(cacheFile, target, {
+      now, onError: diskOptions.onError, memoryBytes: historyCacheBytes, memoryEntries: historyCacheEntries,
+    });
   }
 
   loadCache() {
@@ -139,6 +145,7 @@ export class SensorStore extends EventEmitter {
 
   async startInternal() {
     clearTimeout(this.retryTimer);
+    if (this.aggregatePath) this.historyArchive.start();
     try {
       await this.loadCache(); // Available even when authentication/network fails.
       if (this.stopped) return;
@@ -554,13 +561,15 @@ export class SensorStore extends EventEmitter {
     return reverse ? entries.reverse() : entries;
   }
 
-  async *entryPages(dataRef, { from, to, reverse = false, context, budget = { remaining: MAX_QUERY_ROWS, bytes: MAX_MIXED_QUERY_BYTES } } = {}) {
+  async *entryPages(dataRef, { from, to, reverse = false, context, initialPageSize = PAGE_SIZE,
+    budget = { remaining: MAX_QUERY_ROWS, bytes: MAX_MIXED_QUERY_BYTES } } = {}) {
     let after;
     budget.bytes ??= MAX_MIXED_QUERY_BYTES;
     while (true) {
       if (budget.remaining <= 0) throw budgetError();
       context?.signal.throwIfAborted();
-      const entries = await this.rawPage(dataRef, { from, to, after, reverse, context, limit: Math.min(PAGE_SIZE, budget.remaining) });
+      const entries = await this.rawPage(dataRef, { from, to, after, reverse, context,
+        limit: Math.min(after ? PAGE_SIZE : initialPageSize, budget.remaining) });
       if (!entries.length) return;
       budget.remaining -= entries.length;
       for (const entry of entries) {
@@ -574,18 +583,28 @@ export class SensorStore extends EventEmitter {
   }
 
   mergedRange(options) {
-    const key = JSON.stringify([options.from, options.to, this.connectionVersion, !!options.context]);
+    return this.mixedRead(options);
+  }
+
+  hasMixedData(options) {
+    return this.mixedRead(options, true);
+  }
+
+  mixedRead(options, availabilityOnly = false) {
+    const key = JSON.stringify([availabilityOnly, availabilityOnly ? options.device : null,
+      options.from, options.to, this.connectionVersion, !!options.context]);
     this.mixedRequests ??= new Map();
     if (this.mixedRequests.has(key)) return this.mixedRequests.get(key);
     if (this.stopped) return Promise.reject(Error('Store stopped'));
     if (this.mixedRequests.size >= 8) return Promise.reject(Object.assign(Error('History queue full; retry shortly'), { status: 503 }));
-    // Serialize heavy merged scans; coalesce identical in-flight ranges only.
+    // Probes and full history reads share the queue and deadlines, but never
+    // coalesce a boolean/device-specific result with a full range response.
     const context = options.context || new AbortController();
     const previous = this.mixedTail || Promise.resolve();
     const work = this.bounded(() => previous.catch(() => {}).then(() => {
       context.signal.throwIfAborted();
       if (this.stopped) throw Error('Store stopped');
-      return this.readMergedRange({ ...options, context });
+      return availabilityOnly ? this.readMixedAvailability({ ...options, context }) : this.readMergedRange({ ...options, context });
     }), { signal: context.signal, timeoutMs: this.syncTimeoutMs })
       .catch((error) => { context.abort(error); throw error; });
     this.mixedTail = work;
@@ -593,6 +612,25 @@ export class SensorStore extends EventEmitter {
     this.mixedInflight ??= new Set(); this.mixedInflight.add(work);
     work.finally(() => { this.mixedInflight.delete(work); this.mixedRequests.delete(key); }).catch(() => {});
     return work;
+  }
+
+  async readMixedAvailability({ device, from, to, context, budget = { remaining: MAX_QUERY_ROWS } }) {
+    const matches = (row) => row && (!device || row.device === device) && (row.aggregation
+      ? row.aggregation.bucketStart <= to && row.aggregation.bucketEnd > from
+      : row.time >= from && row.time <= to);
+    // Existence needs one witness, not complete statistics or deduplication:
+    // a covered raw row is replaced by a summary for the same device/day.
+    // Read raw first so summary-before-delete compaction cannot hide a day.
+    const options = { budget, context, initialPageSize: 1 };
+    for await (const entries of this.entryPages(this.dataRef, { ...options,
+      from: Math.max(0, from - HISTORY_KEY_OVERLAP_MS), to: to + HISTORY_KEY_OVERLAP_MS + 1 })) {
+      if (entries.some(({ id, value }) => matches(normalizeReading(id, value)))) return true;
+    }
+    for await (const entries of this.entryPages(this.aggregateRef, { ...options,
+      from: Math.max(0, from - BUCKET_MS), to: to + 1 })) {
+      if (entries.some(({ id, value }) => matches(validateSummary(id, value).row))) return true;
+    }
+    return false;
   }
 
   async readMergedRange({ from, to, context, budget = { remaining: MAX_QUERY_ROWS } }) {
@@ -640,6 +678,7 @@ export class SensorStore extends EventEmitter {
     this.cleanupListeners();
     await this.compactor.stop();
     await Promise.allSettled([this.starting, this.syncing, this.maintaining, ...this.historyInflight.values(), ...(this.mixedInflight || [])].filter(Boolean));
+    await this.historyArchive.stop();
     this.persist();
     await this.disk.flush();
     if (this.app) await this.adapter.dispose(this.app);
@@ -772,12 +811,12 @@ export class SensorStore extends EventEmitter {
     }
   }
 
-  cached(cache, key, load, limit) {
+  cached(cache, key, load, limit, allowMixed = false) {
     this.assertReady();
-    if (this.aggregatePath) return load();
+    if (this.aggregatePath && !allowMixed) return load();
     let entry = cache.get(key);
-    if (!entry || entry.expires <= Date.now()) {
-      entry = { promise: load(), expires: Date.now() + 30000 };
+    if (!entry || entry.expires <= this.now()) {
+      entry = { promise: load(), expires: this.now() + 30000 };
       cache.set(key, entry);
       while (cache.size > limit) cache.delete(cache.keys().next().value);
       entry.promise.catch(() => { if (cache.get(key) === entry) cache.delete(key); });
@@ -813,9 +852,9 @@ export class SensorStore extends EventEmitter {
     }
   }
 
-  async edge(device, reverse, budget, dataRef = this.dataRef) {
+  async edge(device, reverse, budget, dataRef = this.dataRef, initialPageSize = PAGE_SIZE) {
     if (this.aggregatePath) {
-      for await (const entries of this.entryPages(dataRef, { reverse, budget })) {
+      for await (const entries of this.entryPages(dataRef, { reverse, budget, initialPageSize })) {
         const rows = dataRef === this.aggregateRef ? mergeReadings([], entries) : entries.map(({ id, value }) => normalizeReading(id, value)).filter(Boolean);
         rows.sort((a, b) => reverse ? b.time - a.time : a.time - b.time);
         const row = rows.find((r) => (!device || r.device === device) && todayVN(r.time) >= '1970-01-01' && todayVN(r.time) <= todayVN());
@@ -851,7 +890,7 @@ export class SensorStore extends EventEmitter {
     for (const date of dates) {
       const found = await this.cached(this.availabilityCache, JSON.stringify(['day', device, date]), async () => {
         const bounds = calendarBounds(date);
-        if (this.aggregatePath) return (await this.mergedRange({ ...bounds, budget })).some((r) => !device || r.device === device);
+        if (this.aggregatePath) return this.hasMixedData({ ...bounds, device, budget });
         // Stop as soon as one actual row for this device/day is found.
         for await (const rows of this.pages({ ...historyKeyBounds(bounds), budget })) {
           if (rows.some((r) => (!device || r.device === device) && r.time >= bounds.from && r.time <= bounds.to)) return true;
@@ -863,21 +902,40 @@ export class SensorStore extends EventEmitter {
     return available;
   }
 
-  async availability({ device, month, dates }) {
-    const key = JSON.stringify({ device, month, dates });
-    return this.cached(this.availabilityCache, key, async () => {
-      const extent = await this.extent(device);
-      const visible = [];
-      if (month && extent.first) {
-        const end = `${shiftMonth(month, 1)}-01`;
-        for (let day = `${month}-01`; day < end; day = addDays(day, 1)) {
-          if (day >= extent.first && day <= extent.last) visible.push(day);
-        }
+  async availability({ device }) {
+    const first = await this.firstCalendarDate(device);
+    // Only the oldest day is cached; the upper bound follows today's date
+    // even if a cached entry survives midnight.
+    return { first, last: first ? todayVN(this.now()) : null };
+  }
+
+  firstCalendarDate(device) {
+    this.assertReady();
+    const key = device || null;
+    const cached = this.calendarStartCache.get(key);
+    if (cached && cached.expires > this.now()) return cached.promise;
+    // Keep discovery in flight until it settles, then start the one-day TTL.
+    // Live readings/compaction do not invalidate this separate metadata cache.
+    const entry = { expires: Infinity, promise: null };
+    const remove = () => {
+      if (this.calendarStartCache.get(key) === entry) this.calendarStartCache.delete(key);
+    };
+    entry.promise = Promise.resolve().then(async () => {
+      const budget = { remaining: MAX_QUERY_ROWS };
+      let first = await this.edge(device, false, budget, this.dataRef, 1);
+      if (this.aggregatePath) {
+        const summaryFirst = await this.edge(device, false, budget, this.aggregateRef, 1);
+        first = [first, summaryFirst].filter(Boolean).sort()[0] || null;
       }
-      const candidates = [...new Set([...visible, ...(dates || [])])].filter((d) => extent.first && d >= extent.first && d <= extent.last);
-      const available = await this.availableDates(device, candidates);
-      return { ...extent, month: month || null, days: available.filter((d) => visible.includes(d)), validDates: available.filter((d) => dates?.includes(d)) };
-    }, 64);
+      return first;
+    }).then((first) => {
+      if (first) entry.expires = this.now() + CALENDAR_START_TTL_MS;
+      else remove(); // An empty device may start sending before tomorrow.
+      return first;
+    }).catch((error) => { remove(); throw error; });
+    this.calendarStartCache.set(key, entry);
+    while (this.calendarStartCache.size > 64) this.calendarStartCache.delete(this.calendarStartCache.keys().next().value);
+    return entry.promise;
   }
 
   historyKey({ device, from, to }) {
@@ -901,8 +959,15 @@ export class SensorStore extends EventEmitter {
   // paths share these entries; failed/partial scans are never cached.
   async history({ device, from, to, budget = { remaining: MAX_QUERY_ROWS } }) {
     if (this.aggregatePath) {
-      this.assertReady();
-      return (await this.mergedRange({ from, to, budget })).filter((row) => !device || row.device === device);
+      if (this.stopped) this.assertReady();
+      const load = async () => {
+        this.assertReady();
+        return (await this.mergedRange({ from, to, budget })).filter((row) => !device || row.device === device);
+      };
+      // Closed historical days are intentional three-day snapshots. Today's
+      // readings stay online; recent reconciliation never clears these files.
+      return to < calendarBounds(todayVN(this.now())).from
+        ? this.historyArchive.getOrLoad({ device, from, to }, load) : load();
     }
     await this.loadCache();
     const key = this.historyKey({ device, from, to });

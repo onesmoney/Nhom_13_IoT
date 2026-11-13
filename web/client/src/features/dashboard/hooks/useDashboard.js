@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { applyTheme, readTheme, saveTheme } from '../../../app/theme.js';
 import { readFilters, saveFilters } from '../preferences.mjs';
-import { useAvailability } from './useAvailability.js';
 import { useDevices } from './useDevices.js';
 import { useLiveStream } from './useLiveStream.js';
 import { useReadings } from './useReadings.js';
 import { newestReading, selectStatReading } from '../lib/latestReading.mjs';
 import { cacheNotice } from '../lib/cacheNotice.mjs';
+import { chartTimeDomain } from '../lib/chartDomain.js';
 
 export function useDashboard() {
   const [saved] = useState(() => readFilters());
@@ -19,22 +19,13 @@ export function useDashboard() {
   useEffect(() => { applyTheme(theme); }, [theme]);
   const [devicesKey, setDevicesKey] = useState(0);
 
-  const devices = useDevices(devicesKey);
+  const { devices, loading: devicesLoading } = useDevices(devicesKey);
   const device = selected || devices[0]?.device || '';
   useEffect(() => {
     if (!selected && device) setSelected(device);
   }, [device, selected]);
-  // Recent reads must not wait for (or trigger) historical availability scans.
-  const availability = useAvailability(period.mode === 'dates' ? device : '', '', period.dates ?? []);
-  const available = availability.data;
-  useEffect(() => {
-    if (period.mode !== 'dates' || !available) return;
-    const dates = available.validDates.length ? available.validDates : available.last ? [available.last] : [];
-    if (dates.join(',') !== period.dates.join(',')) setPeriod({ mode: 'dates', dates });
-  }, [available, period]);
-  const validPeriod = period.mode === 'recent' ? period
-    : { mode: 'dates', dates: available && available.validDates.length === period.dates.length ? period.dates : [] };
-  const { data, error, loading, reload, requestRefresh } = useReadings(validPeriod, device, 30000);
+  // Apply reads the requested days directly, preserving empty days/selections.
+  const { data, error, loading, refreshing, reload, requestRefresh } = useReadings(period, device, 30000);
 
   const { status, connected } = useLiveStream((reading) => {
     if (!devices.some((d) => d.device === reading.device)) {
@@ -67,9 +58,13 @@ export function useDashboard() {
   }, [reload, period]);
 
   const cachedDataNotice = period.mode === 'recent' ? cacheNotice(data, status) : null;
+  // Keep initial placeholders visible while discovering a device or waiting
+  // for the backend's first synchronization. Background polling keeps charts.
+  const chartsLoading = loading || (!device && (devicesLoading || status?.firebase === 'connecting'));
   const points = data?.points ?? [];
-  const from = data?.from ?? Date.now() - 3600 * 1000;
-  const to = data?.to ?? Date.now();
+  const [from, to] = chartTimeDomain(points,
+    data?.from ?? Date.now() - 3600 * 1000,
+    data?.to ?? Date.now(), period.mode === 'dates');
   const current = devices.find((d) => d.device === device);
   const statReading = selectStatReading(period.mode, device, data, liveReading);
   // lastSeen is only a liveness hint, never a source of sensor values.
@@ -84,7 +79,7 @@ export function useDashboard() {
 
   return {
     period, setPeriod, selected, setSelected, theme, toggleTheme,
-    devices, device, availability, available, data, error, loading, reload,
+    devices, device, data, error, loading, chartsLoading, refreshing, reload,
     status, connected, cachedDataNotice, points, from, to, statReading, liveLatest,
   };
 }

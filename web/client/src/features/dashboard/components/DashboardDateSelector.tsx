@@ -4,14 +4,14 @@ import { fromCalendarDate, toCalendarDate } from '../lib/calendarDate.mjs';
 
 type Props = {
   dates: string[]; range: DateRange | undefined; selection: 'range' | 'multiple';
-  month: string; first: string; last: string; available: string[];
-  loading: boolean; today: string; numberOfMonths: number;
+  month: string; first: string; last: string;
+  today: string; numberOfMonths: number;
   onSelect: (dates: string[]) => void; onRangeChange: (range: DateRange | undefined) => void;
   onMonthChange: (month: string) => void;
 };
 
 // Dates carry calendar components only; API day boundaries remain UTC+7.
-export function DashboardDateSelector({ dates, range, selection, month, first, last, available, loading,
+export function DashboardDateSelector({ dates, range, selection, month, first, last,
   today, numberOfMonths, onSelect, onRangeChange, onMonthChange }: Props) {
   const common = {
     month: toCalendarDate(`${month}-01`),
@@ -31,7 +31,7 @@ export function DashboardDateSelector({ dates, range, selection, month, first, l
     },
     disabled: (day: Date) => {
       const key = fromCalendarDate(day);
-      return key < first || key > last || key > today || (selection === 'multiple' && (loading || !available.includes(key)));
+      return key < first || key > last || key > today;
     },
   };
   return selection === 'range'
