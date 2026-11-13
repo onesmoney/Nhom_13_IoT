@@ -24,7 +24,7 @@ Copy-Item server/.env.example server/.env
 
 Bước sao chép cấu hình chỉ cần thực hiện khi chưa có `server/.env`. Điền `FIREBASE_API_KEY` và `FIREBASE_DATABASE_URL` của dự án vào file này. Cơ chế đăng nhập hiện tại dùng Firebase Anonymous Authentication, nên cần bật phương thức đó trong Firebase Console.
 
-Server tự gộp dữ liệu cũ thành các khoảng 5 phút và xóa mẫu gốc sau khi lưu kết quả. Vì vậy, cần sao lưu dữ liệu và kiểm tra quyền đọc/ghi trước lần chạy đầu. Cách gộp được mô tả trong [MEDIAN_COMPACTION.md](./MEDIAN_COMPACTION.md).
+Server tự gộp dữ liệu cũ thành các khoảng 5 phút và xóa mẫu gốc sau khi lưu kết quả. Vì vậy, cần sao lưu dữ liệu và kiểm tra quyền đọc/ghi trước lần chạy đầu.
 
 Chạy khi phát triển:
 
@@ -112,5 +112,3 @@ Các API dữ liệu hiện chưa có cơ chế đăng nhập người dùng. Ri
 Mở [API trạng thái](http://localhost:4000/api/status) và xem log terminal. `readiness.ready` cho biết dữ liệu đã sẵn sàng; trạng thái kết nối online chưa có nghĩa là đã tải xong dữ liệu.
 
 Nếu không tải được số đo, kiểm tra cấu hình Firebase, Anonymous Authentication và quyền đọc hai nhánh. Nếu có lỗi gộp, xem phần `compaction` trong trạng thái và quyền ghi/xóa của server. Quyền xóa dữ liệu cần giới hạn cho danh tính server; đăng nhập ẩn danh hiện tại không tự phân biệt server với các tài khoản ẩn danh khác.
-
-Cấu trúc mã nguồn được mô tả trong [ARCHITECTURE.md](./ARCHITECTURE.md).
