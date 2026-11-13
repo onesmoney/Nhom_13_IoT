@@ -1,0 +1,18 @@
+# Các file khai báo của firmware
+
+Thư mục này chứa các file header (.h) dùng trong chương trình ESP32.
+
+| File | Chức năng |
+| --- | --- |
+| DhtSensor.h | Đọc nhiệt độ và độ ẩm từ DHT11 |
+| Bh1750Sensor.h | Đọc độ rọi từ BH1750 qua I2C |
+| Pms7003Sensor.h | Đọc nồng độ bụi PM1.0, PM2.5 và PM10 từ PMS7003 qua UART |
+| WiFiProvisioner.h | Quản lý kết nối và trang cấu hình Wi-Fi |
+| FirebaseUploader.h | Gửi dữ liệu cảm biến lên Firebase |
+| FirebaseDiagnostics.h | Đếm số lần gửi thành công, thất bại và thời gian phục hồi |
+| StatusDisplay.h | Hiển thị số đo và trạng thái thiết bị trên màn hình OLED |
+| StatusLed.h | Điều khiển đèn báo trạng thái |
+| ClockTime.h | Đồng bộ thời gian qua NTP |
+| LogTimestamp.h | Tạo mốc thời gian cho các dòng log |
+
+Phần cài đặt của các lớp nằm trong các file .cpp tương ứng ở src/. Riêng FirebaseDiagnostics.h và LogTimestamp.h có phần cài đặt ngay trong header.
